@@ -1,6 +1,6 @@
 /*
     This file is part of SI - A primitive, but simple Space Invaders emulator.
-	Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.d>
+	Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.de>
 
     SI is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,9 +16,86 @@
     along with SI.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-//WORD wdebug = 0;
-//WORD BC = 0;
-//uclock_t test_time = 0;
+#include <stdio.h>
+#include <stdlib.h>
+
+#define BYTE unsigned char
+#define WORD unsigned short int
+#define DWORD unsigned long int
+
+extern BYTE* memory;
+extern FILE* debug;
+
+void update_buffer(WORD offset, BYTE data);
+void invaders_out(BYTE port,BYTE op);
+WORD invaders_in(BYTE port);
+
+/*
+#define PUSH(b)  memory[SP - 1] = (b); SP--;;;  
+#define PULL()   memory[SP++];;;;          
+#define PUSH(b)  memory[SP] = (b); SP--  
+#define PULL()   memory[++SP]         
+*/
+
+#define GET_PSW()  ((*CARRY ? 0x01 : 0) | (*FLAG_X1 ? 0x02 : 0) |\
+                   (*PARITY ? 0x04 : 0) | (*FLAG_X2 ? 0x08 : 0) |\
+                   (*AUX_CARRY ? 0x10 : 0) | (*FLAG_X3 ? 0x20 : 0) |\
+                   (*ZERO ? 0x40 : 0) | (*SIGN ? 0x80 : 0))
+
+WORD _DEBUG = 0;
+
+WORD CODE_BEGIN = 0;
+WORD CODE_END = 0;
+WORD WORKRAM_BEGIN = 0;
+WORD WORKRAM_END = 0;
+WORD VIDRAM_BEGIN = 0;
+WORD VIDRAM_END = 0;
+WORD SPECIALRAM = 0;
+WORD SPECIALROM = 0;
+WORD SPECIALROM_SIZE = 0;
+
+DWORD temp, temp2, temp3;
+WORD wtemp, wtemp2, wtemp3;
+BYTE btemp, btemp2, btemp3;
+BYTE test_zero = 0;
+
+WORD PC = 0x0001; /* Program Counter */
+WORD INTPC = 0;
+
+/*
+   Register : SP = Stack Pointer, PSW = Processor Status Word,
+   A = Accumulator, B, C, D, E, H, L
+*/
+
+WORD SP = 0x23FF;
+BYTE PSW,A,B,C,D,E,H,L;
+
+/* Flags */
+WORD flag[8] = {0,1,0,0,0,0,0,0};
+/*flag[0] = 0   Carry Flag          */
+/*flag[1] = 0   Unused              */
+/*flag[2] = 0   Parity Flag         */
+/*flag[3] = 0   Unused              */
+/*flag[4] = 0   Auxillary Cary Flag */
+/*flag[5] = 0   Unused              */
+/*flag[6] = 0   Zero Flag           */
+/*flag[7] = 0   Sign Flag           */
+
+WORD* CARRY = &flag[0];
+WORD* FLAG_X1 = &flag[1];
+WORD* PARITY = &flag[2];
+WORD* FLAG_X2 = &flag[3];
+WORD* AUX_CARRY = &flag[4];
+WORD* FLAG_X3 = &flag[5];
+WORD* ZERO = &flag[6];
+WORD* SIGN = &flag[7];
+WORD INT = 1;
+
+/*
+WORD wdebug = 0;
+WORD BC = 0;
+uclock_t test_time = 0;
+*/
 
 inline BYTE read_memory(WORD offset)
 {
@@ -28,7 +105,7 @@ inline BYTE read_memory(WORD offset)
                 else
                 {
                         printf("Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                        if(DEBUG)fprintf(debug,"Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
+                        if(_DEBUG)fprintf(debug,"Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
                         exit(1);
                         return 0;
                 }
@@ -39,7 +116,7 @@ inline BYTE read_memory(WORD offset)
                 else
                 {
                         printf("Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                        if(DEBUG)fprintf(debug,"Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
+                        if(_DEBUG)fprintf(debug,"Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
                         exit(1);
                         return 0;
                 }
@@ -57,8 +134,8 @@ inline void write_memory(WORD offset,BYTE data)
         else
         {
                 printf("Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                if(DEBUG)fprintf(debug,"Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                exit(1);
+                if(_DEBUG)fprintf(debug,"Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
+                //exit(1);
         }
 }
 
@@ -87,7 +164,7 @@ WORD cpu(WORD cycles)
                         if(PC > CODE_END)
                         {
                                 return 0;
-                                if(DEBUG)fprintf(debug,"PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                if(_DEBUG)fprintf(debug,"PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
                         }
                 }
                 else
@@ -95,12 +172,12 @@ WORD cpu(WORD cycles)
                         if(PC > (VIDRAM_END + SPECIALROM_SIZE))
                         {
                                 return 0;
-                                if(DEBUG)fprintf(debug,"PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                if(_DEBUG)fprintf(debug,"PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
                         }
                 }
 
                 //if(DEBUG == 2 && wdebug)
-                if(DEBUG == 2)
+                if(_DEBUG == 2)
                 {
                         //if(BC > 800000)
                         //{
@@ -2212,7 +2289,7 @@ WORD cpu(WORD cycles)
                         break;
 
                 default:
-                        if(DEBUG)
+                        if(_DEBUG)
                         {
                         fprintf(debug,"\nFehler bei Offset %4X\n\n",(PC - 1));
                         fprintf(debug,"Opcode : %2X\n\n",memory[PC - 1]);

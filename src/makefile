@@ -1,5 +1,5 @@
-CFLAGS=-ansi -Wall -Werror --pedantic -I.
-LDFLAGS=-lc
+CFLAGS=-Wall -Werror -I.
+LDFLAGS=-lc `allegro-config --libs`
 RELEASE=-O3
 DEBUG=-g
 SOURCE=$(wildcard *.c)

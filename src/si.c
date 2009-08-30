@@ -1,6 +1,6 @@
 /*
     This file is part of SI - A primitive, but simple Space Invaders emulator.
-	Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.d>
+	Copyright 1998 - 2009 Jens MÃ¼hlenhoff <j.muehlenhoff@gmx.de>
 
     SI is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,8 +20,54 @@
 #include <string.h>
 #include <time.h>
 #include <allegro.h>
-#include "si.h"
-#include "cpu.h"
+
+#define BYTE unsigned char
+#define WORD unsigned short int
+#define DWORD unsigned long int
+
+extern WORD _DEBUG;
+
+extern WORD CODE_BEGIN;
+extern WORD CODE_END;
+extern WORD WORKRAM_BEGIN;
+extern WORD WORKRAM_END;
+extern WORD VIDRAM_BEGIN;
+extern WORD VIDRAM_END;
+extern WORD SPECIALRAM;
+extern WORD SPECIALROM;
+extern WORD SPECIALROM_SIZE;
+
+extern WORD INT;
+
+WORD cpu(WORD cycles);
+void interrupt(void);
+void NMI(void);
+void reset(void);
+
+BYTE SOUND = 1;
+BYTE halt = 0;
+
+BYTE* memory = NULL;
+
+WORD shiftdata_amount = 0;
+WORD shiftdata_1 = 0;
+WORD shiftdata_2 = 0;
+
+FILE* debug = NULL;
+FILE* debug2 = NULL;
+
+SAMPLE* sample3_1 = NULL;
+SAMPLE* sample3_2 = NULL;
+SAMPLE* sample3_3 = NULL;
+SAMPLE* sample3_4 = NULL;
+
+SAMPLE* sample5_1 = NULL;
+SAMPLE* sample5_2 = NULL;
+SAMPLE* sample5_3 = NULL;
+SAMPLE* sample5_4 = NULL;
+SAMPLE* sample5_5 = NULL;
+
+BITMAP* double_buffer;
 
 void set_memlocs(void)
 {
@@ -38,8 +84,8 @@ void set_memlocs(void)
 
 void syntax(void)
 {
-        printf("Syntax: si [SPIELNAME]\n\n");
-        printf("Die untersttzten Spiele sind:\n\n");
+        printf("Syntax: siemu [SPIELNAME]\n\n");
+        printf("Die unterstuetzten Spiele sind:\n\n");
         printf("SPIELNAME\t\tORIGINALNAME\t\t\tROM-VERZEICHNIS\n");
         printf("invaders\t\tSpace Invaders\t\t\troms\\invaders\n");
         printf("invadpt2\t\tSpace Invaders Part II\t\troms\\invadpt2\n");
@@ -50,17 +96,17 @@ void syntax(void)
 void message(void)
 {
         printf("                          SPACE INVADERS (C) 1979 MIDWAY\n\n");
-        printf("                                     ÛÛÛÛÛÛÛÛ\n");
-        printf("                               ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ\n");
-        printf("                               ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ\n");
-        printf("                             ÛÛÛÛÛÛ    ÛÛÛÛ    ÛÛÛÛÛÛ\n");
-        printf("                             ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ\n");
-        printf("                                   ÛÛÛÛ    ÛÛÛÛ      \n");
-        printf("                                 ÛÛÛÛ  ÛÛÛÛ  ÛÛÛÛ    \n");
-        printf("                             ÛÛÛÛ                ÛÛÛÛ\n\n");
+        printf("                                     Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›\n");
+        printf("                               Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›\n");
+        printf("                               Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›\n");
+        printf("                             Ã›Ã›Ã›Ã›Ã›Ã›    Ã›Ã›Ã›Ã›    Ã›Ã›Ã›Ã›Ã›Ã›\n");
+        printf("                             Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›Ã›\n");
+        printf("                                   Ã›Ã›Ã›Ã›    Ã›Ã›Ã›Ã›      \n");
+        printf("                                 Ã›Ã›Ã›Ã›  Ã›Ã›Ã›Ã›  Ã›Ã›Ã›Ã›    \n");
+        printf("                             Ã›Ã›Ã›Ã›                Ã›Ã›Ã›Ã›\n\n");
 }
 
-WORD load_rom(BYTE* filename, short offset, short size)
+WORD load_rom(char* filename, short offset, short size)
 {
         FILE* fp = NULL;
          
@@ -78,7 +124,7 @@ WORD load_rom(BYTE* filename, short offset, short size)
         return 1;
 }
 
-WORD load_samples(BYTE* filename, WORD sample_number)
+WORD load_samples(char* filename, WORD sample_number)
 {
         if(sample_number == 31)
         {
@@ -134,7 +180,7 @@ WORD load_roms(WORD game)
         if(memory == NULL)
         {
                 printf("Eine Fehler ist beim allokieren des virtuellen Speichers aufgetreten\n");
-                printf("Ist nicht gengend Speicher im RAM frei ?\n"); 
+                printf("Ist nicht genuegend Speicher im RAM frei ?\n"); 
                 return 0;
         }
 
@@ -142,10 +188,10 @@ WORD load_roms(WORD game)
         {
                 case 1:
                 {
-                        if(!load_rom("roms\\invaders\\invaders.h", 0x0000, 2048))return 0;
-                        if(!load_rom("roms\\invaders\\invaders.g", 0x0800, 2048))return 0;
-                        if(!load_rom("roms\\invaders\\invaders.f", 0x1000, 2048))return 0;
-                        if(!load_rom("roms\\invaders\\invaders.e", 0x1800, 2048))return 0;
+                        if(!load_rom("roms/invaders/invaders.h", 0x0000, 2048))return 0;
+                        if(!load_rom("roms/invaders/invaders.g", 0x0800, 2048))return 0;
+                        if(!load_rom("roms/invaders/invaders.f", 0x1000, 2048))return 0;
+                        if(!load_rom("roms/invaders/invaders.e", 0x1800, 2048))return 0;
                         break;
                 }
                 case 2:
@@ -184,15 +230,15 @@ WORD load_roms(WORD game)
 
 WORD load_sounds(WORD game)
 {                                                       
-        if(!load_samples("samples\\0.wav",31))return 0;
-        if(!load_samples("samples\\1.wav",32))return 0;
-        if(!load_samples("samples\\2.wav",33))return 0;
-        if(!load_samples("samples\\12.wav",34))return 0;
-        if(!load_samples("samples\\4.wav",51))return 0;
-        if(!load_samples("samples\\5.wav",52))return 0;
-        if(!load_samples("samples\\6.wav",53))return 0;
-        if(!load_samples("samples\\7.wav",54))return 0;
-        if(!load_samples("samples\\3.wav",55))return 0;
+        if(!load_samples("samples/0.wav",31))return 0;
+        if(!load_samples("samples/1.wav",32))return 0;
+        if(!load_samples("samples/2.wav",33))return 0;
+        if(!load_samples("samples/12.wav",34))return 0;
+        if(!load_samples("samples/4.wav",51))return 0;
+        if(!load_samples("samples/5.wav",52))return 0;
+        if(!load_samples("samples/6.wav",53))return 0;
+        if(!load_samples("samples/7.wav",54))return 0;
+        if(!load_samples("samples/3.wav",55))return 0;
         return 1;
 }
 
@@ -230,7 +276,7 @@ inline void snapshot()
         save_bmp("si.bmp", double_buffer, pal);
 }
 
-inline void update_buffer(WORD offset, BYTE data)
+void update_buffer(WORD offset, BYTE data)
 {
         int b,c,x,y;
 
@@ -277,7 +323,7 @@ inline WORD port_read(WORD port)
                 if(key[KEY_5])ret -= 0x01;
                 if(key[KEY_2])ret += 0x02;
                 if(key[KEY_1])ret += 0x04;
-                if(key[KEY_CONTROL])ret += 0x10;
+                if(key[KEY_LCONTROL])ret += 0x10;
                 if(key[KEY_LEFT])ret += 0x20;
                 if(key[KEY_RIGHT])ret += 0x40;
         }
@@ -285,7 +331,7 @@ inline WORD port_read(WORD port)
         {
                 ret = 0x00;
                 if(key[KEY_T])ret += 0x04;
-                if(key[KEY_CONTROL])ret += 0x10;
+                if(key[KEY_LCONTROL])ret += 0x10;
                 if(key[KEY_LEFT])ret += 0x20;
                 if(key[KEY_RIGHT])ret += 0x40;
         }
@@ -298,24 +344,22 @@ void invaders_out(BYTE port,BYTE op)
         if(port == 2)
         {
                 invaders_shift(2,op);
-                if(DEBUG)fprintf(debug,"%X wird an Port %X geschrieben\n", op, port);
+                if(_DEBUG)fprintf(debug,"%X wird an Port %X geschrieben\n", op, port);
         }
         if(port == 3)invaders_sound(3,op);
         if(port == 4)
         {
                 invaders_shift(4,op);
-                if(DEBUG)fprintf(debug,"%X wird an Port %X geschrieben\n", op, port);
+                if(_DEBUG)fprintf(debug,"%X wird an Port %X geschrieben\n", op, port);
         }
         else if(port == 5)invaders_sound(5,op);
 }
 
 WORD invaders_in(BYTE port)
 {
-        if(DEBUG && port != 1 && port != 2)fprintf(debug,"Port %X wird gelesen\n",port);
+        if(_DEBUG && port != 1 && port != 2)fprintf(debug,"Port %X wird gelesen\n",port);
         return port_read(port);
 }
-
-#include "cpu.c"
 
 int main(int argc, char* argv[])
 {
@@ -323,8 +367,8 @@ int main(int argc, char* argv[])
         WORD loop = 0;
         WORD display_update = 0;
         WORD cpu_cycles = 0;
-        uclock_t i8080_time;
-        uclock_t i8080_clock;
+        clock_t i8080_time;
+        clock_t i8080_clock;
 
         set_memlocs();
 
@@ -350,17 +394,20 @@ int main(int argc, char* argv[])
                 game = 4;
                 SPECIALROM = 1;
         }
-        if(!strcmp((char*)strlwr(argv[2]),"nosound"))
-        {                 
-                SOUND = 0;
-        }
-        if(!strcmp((char*)strlwr(argv[2]),"debug"))
-        {                 
-                DEBUG = 1;
-        }
-        if(!strcmp((char*)strlwr(argv[2]),"debug2"))
-        {                 
-                DEBUG = 2;
+        if(argc > 2)
+        {
+          if(!strcmp((char*)strlwr(argv[2]),"nosound"))
+          {                 
+                  SOUND = 0;
+          }
+          if(!strcmp((char*)strlwr(argv[2]),"debug"))
+          {                 
+                  _DEBUG = 1;
+          }
+          if(!strcmp((char*)strlwr(argv[2]),"debug2"))
+          {                 
+                  _DEBUG = 2;
+          }
         }
         if(!game)
         {
@@ -390,11 +437,11 @@ int main(int argc, char* argv[])
         double_buffer = create_bitmap(256,256);
         clear_to_color(double_buffer,0);
 
-        if(DEBUG)debug = fopen("DEBUG.TXT","wt");
-        if(DEBUG == 2)debug2 = fopen("DEBUG2.TXT","wt");
+        if(_DEBUG)debug = fopen("DEBUG.TXT","wt");
+        if(_DEBUG == 2)debug2 = fopen("DEBUG2.TXT","wt");
 
         i8080_time = 0x26D6; // 9942 Cycles = 1/120 Second
-        i8080_clock = uclock(); // For initialisation only
+        i8080_clock = clock(); // For initialisation only
 
         for(;;)
         {
@@ -409,7 +456,7 @@ int main(int argc, char* argv[])
                 if(!halt)
                 {
 #endif
-                        i8080_clock = uclock();
+                        i8080_clock = clock();
                         cpu_cycles = cpu(17067); // 33333 Cycles = 60 HZ(34133?)
                         display_update += cpu_cycles;
 
@@ -439,10 +486,10 @@ int main(int argc, char* argv[])
                         if(loop == 2)NMI();
                 }
 
-                while(uclock() < (i8080_clock + i8080_time));
+                while(clock() < (i8080_clock + i8080_time));
         }
-        if(DEBUG)fclose(debug);
-        if(DEBUG == 2)fclose(debug2);
+        if(_DEBUG)fclose(debug);
+        if(_DEBUG == 2)fclose(debug2);
 
         free(memory);
 
@@ -462,3 +509,4 @@ int main(int argc, char* argv[])
         allegro_exit();
         return 1;
 }
+ END_OF_MAIN()

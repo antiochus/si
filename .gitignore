@@ -1,1 +1,5 @@
 *~
+siemu
+*.o
+roms/
+samples/
