@@ -1,0 +1,38 @@
+DD -> (00 = BC, 01 = DE, 10 = HL, 11 = SP)
+DDD / SSS -> (000 = B, 001 = C, 010 = D, 011 = E, 100 = H, 101 = L, 110 = Mem, 111 = A)
+CCC -> (000 = NZ, 001 = Z, 010 = NC, 011 = C, 100 = PARITY ODD, 101 = PARITY EVEN, 110 = POSITIVE, 111 = MINUS) 
+
+7	6	5	4	3	2	1	0
+-------------------------
+0	0	0	0	0	0	0	0		NOP
+0	0	D	D	0	0	0	1		LXI
+0	0	D	D	1	0	0	1		DAD
+0	0	X	Y	T	0	1	0		T (0 = ST, 1 = LD), X (0 = indirect, 1 = direct), Y (Register 0 = B / -, 1 = D / HL)
+0	0	D	D	D	1	1	0		MVI
+0	0	D	D	T	0	1	1		T (0 = INX, 1 = DCX)
+0	0	D	D	D	1	0	T		T (0 = INR, 1 = DCR)
+0	0	0	C	T	1	1	1		T (0 = Rotate left, 1 = Rotate right), C (0 = Not through carry, 1 = Through carry)
+0	0	1	T	T	1	1	1		TT (00 = DAA, 01 = CMA, 10 = STC, 11 = CMC)
+
+0	1	D	D	D	S	S	S		MOV
+0	1	1	1	0	1	1	0		HLT (would be MOV mem, mem)
+
+1	0	0	X	T	S	S	S		X (0 = ADD, 1 = SUB), T (0 = Not through carry, 1 = Through carry)
+1	0	1	X	X	S	S	S		XX (00 = AND, 01 = XOR, 10 = OR, 11 = CMP)
+1	1	0	X	T	1	1	0		X (0 = ADD, 1 = SUB) immediate, T (0 = Not through carry, 1 = Through carry)
+1	1	1	X	X	1	1	0		XX immediate (00 = AND, 01 = XOR, 10 = OR, 11 = CMP)
+
+1	1	D	D	0	T	0	1		POP / PUSH, T (0 = POP, 1 = PUSH), DD = 11 -> AF and not SP !!!
+
+1	1	0	0	0	0	1	1		JMP
+1	1	0	0	1	0	0	1		RET
+1	1	0	0	1	1	0	1		CALL
+1	1	C	C	C	T	T	0		RET / CALL / JMP CCC, T (00 = RET, 01 = CALL, 10 = JMP)
+
+1	1	0	1	1	T	1	1		IN / OUT, T (0 = IN, 1 = OUT)
+1	1	1	1	1	0	0	1		SPHL
+1	1	1	0	0	0	1	1		XTHL
+1	1	1	1	T	0	1	1		DI / EI (0 = Disable, 1 = Enable)
+1	1	A	A	A	1	1	1		RST adress 00AAA000
+1	1	1	0	1	0	0	1		PCHL
+1	1	1	0	1	0	1	1		XCHG

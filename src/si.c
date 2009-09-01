@@ -1,6 +1,6 @@
 /*
     This file is part of SI - A primitive, but simple Space Invaders emulator.
-	Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.de>
+    Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.de>
 
     SI is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,28 +21,8 @@
 #include <time.h>
 #include <allegro.h>
 
-#define BYTE unsigned char
-#define WORD unsigned short int
-#define DWORD unsigned long int
-
-extern WORD _DEBUG;
-
-extern WORD CODE_BEGIN;
-extern WORD CODE_END;
-extern WORD WORKRAM_BEGIN;
-extern WORD WORKRAM_END;
-extern WORD VIDRAM_BEGIN;
-extern WORD VIDRAM_END;
-extern WORD SPECIALRAM;
-extern WORD SPECIALROM;
-extern WORD SPECIALROM_SIZE;
-
-extern WORD INT;
-
-WORD cpu(WORD cycles);
-void interrupt(void);
-void NMI(void);
-void reset(void);
+#include "si_types.h"
+#include "cpu.h"
 
 BYTE SOUND = 1;
 BYTE halt = 0;
@@ -176,12 +156,17 @@ WORD load_samples(char* filename, WORD sample_number)
 
 WORD load_roms(WORD game)
 {
+        int i;
         memory = (BYTE*) malloc(65535);
         if(memory == NULL)
         {
                 printf("Eine Fehler ist beim allokieren des virtuellen Speichers aufgetreten\n");
                 printf("Ist nicht genuegend Speicher im RAM frei ?\n"); 
                 return 0;
+        }
+        for(i = 0; i < 65536; i++)
+        {
+                memory[i] = 0xFF;
         }
 
         switch(game)
@@ -266,7 +251,7 @@ inline void invaders_sound(WORD channel, WORD op)
 
 inline void update_screen()
 {
-        blit(double_buffer, screen, 0, 0, 0, 0, 256, 256);
+        blit(double_buffer, screen, 0, 0, 0, 0, 224, 256);
 }
 
 inline void snapshot()
@@ -346,13 +331,22 @@ void invaders_out(BYTE port,BYTE op)
                 invaders_shift(2,op);
                 if(_DEBUG)fprintf(debug,"%X wird an Port %X geschrieben\n", op, port);
         }
-        if(port == 3)invaders_sound(3,op);
+        else
+        if(port == 3)
+        {
+                invaders_sound(3,op);
+        }
+        else
         if(port == 4)
         {
                 invaders_shift(4,op);
                 if(_DEBUG)fprintf(debug,"%X wird an Port %X geschrieben\n", op, port);
         }
-        else if(port == 5)invaders_sound(5,op);
+        else
+        if(port == 5)
+        {
+                invaders_sound(5,op);
+        }
 }
 
 WORD invaders_in(BYTE port)
@@ -369,6 +363,7 @@ int main(int argc, char* argv[])
         WORD cpu_cycles = 0;
         clock_t i8080_time;
         clock_t i8080_clock;
+        struct timespec ts;
 
         set_memlocs();
 
@@ -429,11 +424,11 @@ int main(int argc, char* argv[])
                 if(install_sound(DIGI_AUTODETECT, MIDI_NONE ,"dfg") != 0)
                 {
                         printf("Fehler beim Initialisieren des Sound-Systems");
-                        return 5;
+                        SOUND = 0;
                 }
         }
 
-        set_gfx_mode(GFX_AUTODETECT, 256, 256, 0, 0);
+        set_gfx_mode(GFX_AUTODETECT_WINDOWED, 224, 256, 0, 0);
         double_buffer = create_bitmap(256,256);
         clear_to_color(double_buffer,0);
 
@@ -448,7 +443,10 @@ int main(int argc, char* argv[])
                 if(key[KEY_ESC])break;
                 if(key[KEY_F10])snapshot();
                 if(key[KEY_F3])reset();
-                if(key[KEY_B])i8080_time ^= 0x136B; // Speed up wait Cycle 
+                if(key[KEY_B])
+                {
+                        i8080_time = 0x1000; // Speed up wait Cycle 136B
+                }
 #ifdef SLOW
                 if(key[KEY_H])halt ^= 1;
                 if(key[KEY_I])INT ^= 1;
@@ -460,7 +458,7 @@ int main(int argc, char* argv[])
                         cpu_cycles = cpu(17067); // 33333 Cycles = 60 HZ(34133?)
                         display_update += cpu_cycles;
 
-                        if(!cpu_cycles)return 6; 
+                        if(cpu_cycles == -1000)return 6; 
 #ifdef SLOW
                 }
                 if(key[KEY_S])
@@ -468,7 +466,7 @@ int main(int argc, char* argv[])
                         cpu_cycles = cpu(1); // 33333 Cycles = 60 HZ(34133?)
                         display_update += cpu_cycles;
 
-                        if(!cpu_cycles)return 6;
+                        if(cpu_cycles == -1000)return 6;
                 }
 #endif
                 if(display_update >= 34133)
@@ -486,7 +484,9 @@ int main(int argc, char* argv[])
                         if(loop == 2)NMI();
                 }
 
-                while(clock() < (i8080_clock + i8080_time));
+                ts.tv_sec = 0;
+                ts.tv_nsec = (i8080_clock + i8080_time - clock()) * 1000;
+                //nanosleep(&ts, NULL);
         }
         if(_DEBUG)fclose(debug);
         if(_DEBUG == 2)fclose(debug2);
@@ -509,4 +509,4 @@ int main(int argc, char* argv[])
         allegro_exit();
         return 1;
 }
- END_OF_MAIN()
+END_OF_MAIN()

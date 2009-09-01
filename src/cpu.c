@@ -1,6 +1,6 @@
 /*
     This file is part of SI - A primitive, but simple Space Invaders emulator.
-	Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.de>
+    Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.de>
 
     SI is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,16 +19,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define BYTE unsigned char
-#define WORD unsigned short int
-#define DWORD unsigned long int
-
-extern BYTE* memory;
-extern FILE* debug;
-
-void update_buffer(WORD offset, BYTE data);
-void invaders_out(BYTE port,BYTE op);
-WORD invaders_in(BYTE port);
+#include "si_types.h"
+#include "si.h"
 
 /*
 #define PUSH(b)  memory[SP - 1] = (b); SP--;;;  
@@ -54,13 +46,15 @@ WORD SPECIALRAM = 0;
 WORD SPECIALROM = 0;
 WORD SPECIALROM_SIZE = 0;
 
-DWORD temp, temp2, temp3;
-WORD wtemp, wtemp2, wtemp3;
-BYTE btemp, btemp2, btemp3;
-BYTE test_zero = 0;
-
 WORD PC = 0x0001; /* Program Counter */
+WORD old_cmd1;
+WORD old_cmd2;
+WORD old_cmd3;
+WORD old_cmd4;
+WORD old_cmd5;
 WORD INTPC = 0;
+
+int ERROR = 0;
 
 /*
    Register : SP = Stack Pointer, PSW = Processor Status Word,
@@ -69,6 +63,7 @@ WORD INTPC = 0;
 
 WORD SP = 0x23FF;
 BYTE PSW,A,B,C,D,E,H,L;
+BYTE SP_UPPER, SP_LOWER;
 
 /* Flags */
 WORD flag[8] = {0,1,0,0,0,0,0,0};
@@ -97,64 +92,710 @@ WORD BC = 0;
 uclock_t test_time = 0;
 */
 
-inline BYTE read_memory(WORD offset)
+#include "cpu_tools.h"
+#include "cpu_mov_ld_st.h"
+#include "cpu_arithmetic.h"
+#include "cpu_flow_control.h"
+#include "cpu_stack.h"
+#include "cpu_special.h"
+
+inline void decode_dd(BYTE instruction, BYTE **upper, BYTE **lower)
 {
-        if(SPECIALROM == 0)
+        switch(instruction &  0x30) // Bits 5 + 4
         {
-                if(offset <= VIDRAM_END)return memory[offset];
+                case 0x00:
+                        *upper = &B;
+                        *lower = &C;
+                        break;
+
+                case 0x10:
+                        *upper = &D;
+                        *lower = &E;
+                        break;
+
+                case 0x20:
+                        *upper = &H;
+                        *lower = &L;
+                        break;
+
+                case 0x30:
+                        *lower = NULL;
+                        *upper = NULL;
+                        break;
+        } 
+}
+
+inline void decode_dd_special(BYTE instruction, BYTE **upper, BYTE **lower)
+{
+        switch(instruction &  0x30) // Bits 4 + 3
+        {
+                case 0x00:
+                        *upper = &B;
+                        *lower = &C;
+                        break;
+
+                case 0x10:
+                        *upper = &D;
+                        *lower = &E;
+                        break;
+
+                case 0x20:
+                        *upper = &H;
+                        *lower = &L;
+                        break;
+
+                case 0x30:
+                        *upper = &A;
+                        *lower = &PSW;
+                        break;
+        } 
+}
+
+inline void decode_sss(BYTE instruction, BYTE** source)
+{
+        switch(instruction & 0x07)
+        {
+                case 0x00:
+                        *source = &B;
+                        break;
+
+                case 0x01:
+                        *source = &C;
+                        break;
+
+                case 0x02:
+                        *source = &D;
+                        break;
+
+                case 0x03:
+                        *source = &E;
+                        break;
+
+                case 0x04:
+                        *source = &H;
+                        break;
+
+                case 0x05:
+                        *source = &L;
+                        break;
+
+                case 0x06:
+                        *source = NULL;
+                        break;
+
+                case 0x07:
+                        *source = &A;
+                        break;
+        }
+}
+
+inline void decode_ddd(BYTE instruction, BYTE** source)
+{
+        switch(instruction & 0x38)
+        {
+                case 0x00:
+                        *source = &B;
+                        break;
+
+                case 0x08:
+                        *source = &C;
+                        break;
+
+                case 0x10:
+                        *source = &D;
+                        break;
+
+                case 0x18:
+                        *source = &E;
+                        break;
+
+                case 0x20:
+                        *source = &H;
+                        break;
+
+                case 0x28:
+                        *source = &L;
+                        break;
+
+                case 0x30:
+                        *source = NULL;
+                        break;
+
+                case 0x38:
+                        *source = &A;
+                        break;
+        }
+}
+
+inline int check_flag_condition(BYTE instruction)
+{
+        switch(instruction & 0x38)
+        {
+                case 0x00:
+                        return !*ZERO;
+                        break;
+
+                case 0x08:
+                        return *ZERO;
+                        break;
+
+                case 0x10:
+                        return !*CARRY;
+                        break;
+
+                case 0x18:
+                        return *CARRY;
+                        break;
+
+                case 0x20:
+                        return !*PARITY;
+                        break;
+
+                case 0x28:
+                        return *PARITY;
+                        break;
+
+                case 0x30:
+                        return !*SIGN;
+                        break;
+
+                case 0x38:
+                        return *SIGN;
+                        break;
+                        
+                default:
+                        printf("Error: Unkown flag condition\n");
+                        return 0;
+        }
+}
+
+inline int decode_00(BYTE instruction, int cycle_count)
+{
+        BYTE *upper;
+        BYTE *lower;
+        BYTE sp_upper;
+        BYTE sp_lower;
+        if(!instruction) /* NOP */
+        {
+                cycle_count -= 4;
+        }
+        else
+        if((instruction & 0x0F) == 0x01) /* LXI */
+        {
+                decode_dd(instruction, &upper, &lower);
+                if((!upper) || (!lower))
+                {
+                        upper = &sp_upper;
+                        lower = &sp_lower;
+                        sp_upper = SP >> 8;
+                        sp_lower = SP & 0xFF;
+                }
+                opcode_lxi(upper, lower);
+                if(upper == &sp_upper)
+                {
+                        SP = (sp_upper << 8) | sp_lower;
+                }
+                cycle_count -= 10;
+        }
+        else
+        if((instruction & 0x0F) == 0x09) /* DADI */
+        {
+                decode_dd(instruction, &upper, &lower);
+                if((!upper) || (!lower))
+                {
+                        upper = &sp_upper;
+                        lower = &sp_lower;
+                        sp_upper = SP >> 8;
+                        sp_lower = SP & 0xFF;
+                }
+                opcode_dad(upper, lower);
+                if(upper == &sp_upper)
+                {
+                        SP = (sp_upper << 8) | sp_lower;
+                }
+                cycle_count -= 10;
+        }
+        else
+        if((instruction & 0x07) == 0x02) /* LD/ST */
+        {
+                if((instruction & 0x08) == 0x08)
+                {
+                        /* LD */
+                        if((instruction & 0x20) == 0x20)
+                        {
+                                /* Direct */
+                                if((instruction & 0x10) == 0x00)
+                                {
+                                        opcode_lhld();
+                                        cycle_count -= 16;
+                                }
+                                else
+                                {
+                                        opcode_lda();
+                                        cycle_count -= 13;
+                                }
+                        }
+                        else
+                        {
+                                /* Indirect */
+                                if((instruction & 0x10) == 0x00)
+                                {
+                                        opcode_ldax(&B, &C);
+                                        cycle_count -= 7;
+                                }
+                                else
+                                {
+                                        opcode_ldax(&D, &E);
+                                        cycle_count -= 7;
+                                }
+                        }
+                }
                 else
                 {
-                        printf("Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                        if(_DEBUG)fprintf(debug,"Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                        exit(1);
-                        return 0;
+                        /* ST */
+                        if((instruction & 0x20) == 0x20)
+                        {
+                                /* Direct */
+                                if((instruction & 0x10) == 0x00)
+                                {
+                                        opcode_shld();
+                                        cycle_count -= 16;
+                                }
+                                else
+                                {
+                                        opcode_sta();
+                                        cycle_count -= 13;
+                                }
+                        }
+                        else
+                        {
+                                /* Indirect */
+                                if((instruction & 0x10) == 0x00)
+                                {
+                                        opcode_stax(&B, &C);
+                                        cycle_count -= 7;
+                                }
+                                else
+                                {
+                                        opcode_stax(&D, &E);
+                                        cycle_count -= 7;
+                                }
+                        }
+                }
+        }
+        else
+        if((instruction & 0x07) == 0x03) /* INX / DCX */
+        {
+                decode_dd(instruction, &upper, &lower);
+                if((!upper) || (!lower))
+                {
+                        upper = &sp_upper;
+                        lower = &sp_lower;
+                        sp_upper = SP >> 8;
+                        sp_lower = SP & 0xFF;
+                }
+                if((instruction & 0x08) == 0x08)
+                {
+                        opcode_dcx(upper, lower);
+                }
+                else
+                {
+                        opcode_inx(upper, lower);
+                }
+                if(upper == &sp_upper)
+                {
+                        SP = (sp_upper << 8) | sp_lower;
+                }
+                cycle_count -= 5;
+        }
+        else
+        if((instruction & 0x06) == 0x04) /* INR / DCR */
+        {
+                decode_ddd(instruction, &lower);
+                if((instruction & 0x01) == 0x01)
+                {
+                        opcode_dcr(lower);
+                }
+                else
+                {
+                        opcode_inr(lower);
+                }
+                if(!lower)
+                {
+                        cycle_count -= 5;
+                }
+                cycle_count -= 5;
+        }
+        else
+        if((instruction & 0x07) == 0x06) /* MVI */
+        {
+                decode_ddd(instruction, &lower);
+                opcode_mvi(lower);
+                cycle_count -= 7;
+                if(!lower)
+                {
+                        cycle_count -= 3;
+                }
+        }
+        else
+        if((instruction & 0x27) == 0x07) /* ROTATE */
+        {
+                if((instruction & 0x08) == 0x00) /* LEFT */
+                {
+                        if((instruction & 0x10) == 0x00) /* NO CARRY */
+                        {
+                                opcode_ral();
+                        }
+                        else /* CARRY */
+                        {
+                                opcode_rlc();
+                        }
+                }
+                else /* RIGHT */
+                {
+                        if((instruction & 0x10) == 0x00) /* NO CARRY */
+                        {
+                                opcode_rar();
+                        }
+                        else /* CARRY */
+                        {
+                                opcode_rrc();
+                        }
+                }
+                cycle_count -= 4;
+        }
+        else
+        if((instruction & 0x27) == 0x27) /* SPECIAL */
+        {
+                switch(instruction &  0x18) // Bits 4 + 3
+                {
+                        case 0x00: /* DAA */
+                                opcode_daa();
+                                break;
+        
+                        case 0x08: /* CMA */
+                                opcode_cma();
+                                break;
+        
+                        case 0x10: /* STC */
+                                opcode_stc();
+                                break;
+        
+                        case 0x18: /* CMC */
+                                opcode_cmc();
+                                break;
+                } 
+                cycle_count -= 4;
+        }
+        else
+        {
+                printf("Opcode not implemented: %2X", instruction);
+                return -1000;
+        }
+        return cycle_count;
+}
+
+inline int decode_10(BYTE instruction, int cycle_count)
+{
+        BYTE *lower;
+        decode_sss(instruction, &lower);
+        if((instruction & 0x20) == 0x00) /* ADD / SUB */
+        {
+                if((instruction & 0x10) == 0x00) /* ADD */
+                {
+                        if((instruction & 0x08) == 0x00) /* NO CARRY */
+                        {
+                                opcode_add(lower);
+                        }
+                        else /* CARRY */
+                        {
+                                opcode_adc(lower);
+                        }
+                }
+                else /* SUB */
+                {
+                        if((instruction & 0x08) == 0x00) /* NO CARRY */
+                        {
+                                opcode_sub(lower);
+                        }
+                        else /* CARRY */
+                        {
+                                opcode_sbb(lower);
+                        }
+                }
+                cycle_count -= 4;
+        }
+        else /* AND / XOR / OR / CMP */
+        {
+                switch(instruction &  0x18) // Bits 4 + 3
+                {
+                        case 0x00: /* AND */
+                                opcode_ana(lower);
+                                break;
+        
+                        case 0x08: /* XOR */
+                                opcode_xra(lower);
+                                break;
+        
+                        case 0x10: /* OR */
+                                opcode_ora(lower);
+                                break;
+        
+                        case 0x18: /* CMP */
+                                opcode_cmp(lower);
+                                break;
+                } 
+        }
+        if(lower)
+        {
+                return cycle_count - 4;
+        }
+        else
+        {
+                return cycle_count - 7;
+        }
+}
+
+inline int decode_11(BYTE instruction, int cycle_count)
+{
+        BYTE *upper;
+        BYTE *lower;
+        if((instruction & 0x0B) == 0x01) /* PUSH / POP */
+        {
+                decode_dd_special(instruction, &upper, &lower);
+                if((instruction & 0x04) == 0x04) /* PUSH */
+                {
+                        if(lower == &PSW)
+                        {
+                                PSW = GET_PSW();
+                        }
+                        opcode_push(upper, lower);
+                        cycle_count -= 11;
+                }
+                else
+                {
+                        opcode_pop(upper, lower);
+                        cycle_count -= 10;
+                        if(lower == &PSW)
+                        {
+                                set_flags();
+                        }
+                }
+        }
+        else
+        if((instruction & 0x27) == 0x26) /* AND / XOR / OR / CMP immediate */
+        {
+                switch(instruction &  0x18) // Bits 4 + 3
+                {
+                        case 0x00: /* AND */
+                                opcode_ani();
+                                break;
+        
+                        case 0x08: /* XOR */
+                                opcode_xri();
+                                break;
+        
+                        case 0x10: /* OR */
+                                opcode_ori();
+                                break;
+        
+                        case 0x18: /* CMP */
+                                opcode_cpi();
+                                break;
+                } 
+                cycle_count -= 7;
+        }
+        else
+        if((instruction & 0x27) == 0x06) /* ADD / SUB immediate */
+        {
+                switch(instruction &  0x18) // Bits 4 + 3
+                {
+                        case 0x00: /* ADI */
+                                opcode_adi();
+                                break;
+        
+                        case 0x08: /* ACI */
+                                opcode_aci();
+                                break;
+        
+                        case 0x10: /* SUI */
+                                opcode_sui();
+                                break;
+        
+                        case 0x18: /* SBI */
+                                opcode_sbi();
+                                break;
+                } 
+                cycle_count -= 7;
+        }
+        else
+        if((instruction & 0x3F) == 0x03) /* JMP */
+        {
+                opcode_jmp();
+                cycle_count -= 10;
+        }
+        else
+        if((instruction & 0x3F) == 0x09) /* RET */
+        {
+                opcode_ret();
+                cycle_count -= 10;
+        }
+        else
+        if((instruction & 0x3F) == 0x0D) /* CALL */
+        {
+                opcode_call();
+                cycle_count -= 17;
+        }
+        else
+        if((instruction & 0x3F) == 0x13) /* OUT */
+        {
+                opcode_out();
+                cycle_count -= 10;
+        }
+        else
+        if((instruction & 0x3F) == 0x1B) /* IN */
+        {
+                opcode_in();
+                cycle_count -= 10;
+        }
+        else
+        if((instruction & 0x3F) == 0x23) /* XTHL */
+        {
+                opcode_xthl();
+                cycle_count -= 18;
+        }
+        else
+        if((instruction & 0x3F) == 0x29) /* PCHL */
+        {
+                opcode_pchl();
+                cycle_count -= 5;
+        }
+        else
+        if((instruction & 0x3F) == 0x2B) /* XCHG */
+        {
+                opcode_xchg();
+                cycle_count -= 4;
+        }
+        else
+        if((instruction & 0x3F) == 0x33) /* DI */
+        {
+                opcode_di();
+                cycle_count -= 4;
+        }
+        else
+        if((instruction & 0x3F) == 0x3B) /* EI */
+        {
+                opcode_ei();
+                cycle_count -= 4;
+        }
+        else
+        if(((instruction & 0x01) == 0x00) && ((instruction & 0x06) != 0x06)) /* RET / CALL / JMP CCC */
+        {
+                switch(instruction & 0x06)
+                {
+                        case 0x00: /* RET */
+                                if(check_flag_condition(instruction))
+                                {
+                                        opcode_ret();
+                                        cycle_count -= 11;
+                                }
+                                else
+                                {
+                                        cycle_count -= 5;
+                                }
+                                break;
+
+                        case 0x04: /* CALL */
+                                if(check_flag_condition(instruction))
+                                {
+                                        opcode_call();
+                                        cycle_count -= 17;
+                                }
+                                else
+                                {
+                                        // CALL and JMP have an additional argument that must be ignored if not taken
+                                        PC += 2;
+                                        cycle_count -= 11;
+                                }
+                                break;
+
+                        case 0x02: /* JMP */
+                                if(check_flag_condition(instruction))
+                                {
+                                        opcode_jmp();
+                                        cycle_count -= 10;
+                                }
+                                else
+                                {
+                                        // CALL and JMP have an additional argument that must be ignored if not taken
+                                        PC += 2;
+                                        cycle_count -= 10;  // This is NOT an error, at least the intel specification says so
+                                }
+                                break;
                 }
         }
         else
         {
-                if(offset <= (VIDRAM_END + SPECIALROM_SIZE))return memory[offset];
-                else
-                {
-                        printf("Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                        if(_DEBUG)fprintf(debug,"Leseversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                        exit(1);
-                        return 0;
-                }
+                printf("Opcode not implemented: %2X", instruction);
+                return -1000;
         }
+        return cycle_count;
 }
 
-inline void write_memory(WORD offset,BYTE data)
-{                              
-        if(offset >= WORKRAM_BEGIN && offset <= WORKRAM_END)memory[offset] = data;
-        else if(offset >= VIDRAM_BEGIN && offset <= VIDRAM_END)
-        {
-                memory[offset] = data;
-                update_buffer(offset, data);
-        }
-        else
-        {
-                printf("Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                if(_DEBUG)fprintf(debug,"Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                //exit(1);
-        }
-}
-
-inline void set_flags(void)
+inline int decode(BYTE instruction, int cycle_count)
 {
-        if(PSW & 0x01)  *CARRY     = 1;  else *CARRY     = 0;
-        if(PSW & 0x02)  *FLAG_X1   = 1;  else *FLAG_X1   = 0;
-        if(PSW & 0x04)  *PARITY    = 1;  else *PARITY    = 0;
-        if(PSW & 0x08)  *FLAG_X2   = 1;  else *FLAG_X2   = 0;
-        if(PSW & 0x10)  *AUX_CARRY = 1;  else *AUX_CARRY = 0;
-        if(PSW & 0x20)  *FLAG_X3   = 1;  else *FLAG_X3   = 0;
-        if(PSW & 0x40)  *ZERO      = 1;  else *ZERO      = 0;
-        if(PSW & 0x80)  *SIGN      = 1;  else *SIGN      = 0;
+        BYTE *bsrc = NULL;
+        BYTE *bdest = NULL;
+        switch(instruction & 0xC0) /* Upper two bits */
+        {
+                case 0x00:
+                        cycle_count = decode_00(instruction, cycle_count);
+                        break;                        
+                        
+                case 0x40:  /* MOV or HLT */
+                        decode_sss(instruction, &bsrc);
+                        decode_ddd(instruction, &bdest);
+                        if((!bsrc) && (!bdest))
+                        {
+                                /* HLT */
+                                /* TODO: Should halt the CPU */
+                                printf("HLT not supported!\n");
+                                cycle_count = -1000; 
+                        }
+                        opcode_mov(bdest, bsrc);
+                        cycle_count -= 4;
+                        if((!bsrc) || (!bdest))
+                        {
+                                cycle_count -= 3;
+                        }
+                        break;
 
+                case 0x80:
+                        cycle_count = decode_10(instruction, cycle_count);
+                        break;                        
+
+                case 0xC0:
+                        cycle_count = decode_11(instruction, cycle_count);
+                        break;                        
+
+                default:
+                        printf("Unkown opcode %2X", instruction);
+                        cycle_count = -1000;
+        }
+        
+        if(ERROR)
+        {
+                printf("Error condition!");
+                cycle_count = -1000;
+        }
+
+        return cycle_count;
 }
 
 WORD cpu(WORD cycles)
 {
         int cycle_count = cycles;
+        int fdbg = 0;
 
         do
         {
@@ -163,16 +804,16 @@ WORD cpu(WORD cycles)
                 {
                         if(PC > CODE_END)
                         {
-                                return 0;
-                                if(_DEBUG)fprintf(debug,"PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                printf("PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                return -1000;
                         }
                 }
                 else
                 {
                         if(PC > (VIDRAM_END + SPECIALROM_SIZE))
                         {
-                                return 0;
-                                if(_DEBUG)fprintf(debug,"PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                printf("PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                return -1000;
                         }
                 }
 
@@ -202,2123 +843,40 @@ WORD cpu(WORD cycles)
                         //fprintf(debug2,"%2X %2X %2X %2X %2X %2X\n", memory[SP], memory[SP + 1], memory[SP + 2], memory[SP + 3], memory[SP + 4], memory[SP + 5]);
                         //}
                 }
-                switch(memory[PC++])
+                //if(PC == 0x1785)
+                //{
+                //        fdbg = 1;
+                //}
+                if(fdbg)
                 {
-                case 0x00: /* NOP (No Operation) [XCHG A,A]*/
-                        cycle_count -= 4;
-                        break;
-
-                case 0x01: /* LXI BC, 0x???? */
-                        B = read_memory((PC + 1));
-                        C = read_memory(PC);
-                        PC += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x02: /* STAX BC */
-                        temp = (B << 8) | C;
-                        write_memory(temp,A);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x03: /* INX BC */
-                        temp = ((B << 8) | C);
-                        temp++;
-                        B = temp >> 8;
-                        C = temp & 0xFF;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x04: /* INR B */
-                        btemp = B;
-                        B++;
-                        if((btemp & 0x0F) > (B & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((B & 0x80))*SIGN = 1;
-                        *ZERO = !(B);
-                        temp3 = 0;
-                        if((B & 0x80))temp3++;
-                        if((B & 0x40))temp3++;
-                        if((B & 0x20))temp3++;
-                        if((B & 0x10))temp3++;
-                        if((B & 0x08))temp3++;
-                        if((B & 0x04))temp3++;
-                        if((B & 0x02))temp3++;
-                        if((B & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x05: /* DCR B */
-                        btemp = B;
-                        B--;
-                        if((btemp & 0x0F) < (B & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((B & 0x80))*SIGN = 1;
-                        *ZERO = !(B);
-                        temp3 = 0;
-                        if((B & 0x80))temp3++;
-                        if((B & 0x40))temp3++;
-                        if((B & 0x20))temp3++;
-                        if((B & 0x10))temp3++;
-                        if((B & 0x08))temp3++;
-                        if((B & 0x04))temp3++;
-                        if((B & 0x02))temp3++;
-                        if((B & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x06: /* MVI B, 0x?? */
-                        B = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x07: /* RLC */
-                        btemp = A;
-                        A = A << 1;
-                        btemp &= 0x80;
-                        if(btemp)btemp = 1;
-                        A |= btemp;
-                        *CARRY = 0;
-                        *CARRY |= btemp;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0x08: /* DB 0x08 */
-
-                case 0x09: /* DAD BC */
-                        temp = (B << 8) | C;
-                        temp2 = (H << 8) | L;
-                        temp2 += temp;
-                        H = temp2 >> 8;
-                        L = temp2 & 0xFF;
-                        if(temp2 >= 0x10000)*CARRY = 1;
-                        else *CARRY = 0;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x0A: /* LDAX BC */
-                        A = read_memory(((B << 8) | C));
-                        cycle_count -= 7;
-                        break;
-
-                case 0x0B: /* DCX BC */
-                        temp = ((B << 8) | C);
-                        temp--;
-                        B = temp >> 8;
-                        C = temp & 0xFF;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x0C: /* INR C */
-                        temp = C;
-                        C++;
-                        if((temp & 0x0F) > (C & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((C & 0x80))*SIGN = 1;
-                        *ZERO = !(C);
-                        temp3 = 0;
-                        if((C & 0x80))temp3++;
-                        if((C & 0x40))temp3++;
-                        if((C & 0x20))temp3++;
-                        if((C & 0x10))temp3++;
-                        if((C & 0x08))temp3++;
-                        if((C & 0x04))temp3++;
-                        if((C & 0x02))temp3++;
-                        if((C & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x0D: /* DCR C */
-                        temp = C;
-                        C--;
-                        if((temp & 0x0F) < (C & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((C & 0x80))*SIGN = 1;
-                        *ZERO = !(C);
-                        temp3 = 0;
-                        if((C & 0x80))temp3++;
-                        if((C & 0x40))temp3++;
-                        if((C & 0x20))temp3++;
-                        if((C & 0x10))temp3++;
-                        if((C & 0x08))temp3++;
-                        if((C & 0x04))temp3++;
-                        if((C & 0x02))temp3++;
-                        if((C & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x0E: /* MVI C, 0x?? */
-                        C = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x0F: /* RRC */
-                        btemp = A;
-                        A = A >> 1;
-                        btemp &= 0x01;
-                        if(btemp)btemp = 0x80;
-                        A |= btemp;
-                        if(btemp)*CARRY = 1;
-                        else *CARRY = 0;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0x10: /* DB 0x10 */
-
-                case 0x11: /* LXI DE, 0x???? */
-                        D = read_memory(PC + 1);
-                        E = read_memory(PC);
-                        PC += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x12: /* STAX DE */
-                        temp = (D << 8) | E;
-                        write_memory(temp,A);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x13: /* INX DE */
-                        temp = ((D << 8) | E);
-                        temp++;
-                        D = temp >> 8;
-                        E = temp & 0xFF;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x14: /* INR D */
-                        btemp = D;
-                        D++;
-                        if((btemp & 0x0F) > (D & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((D & 0x80))*SIGN = 1;
-                        *ZERO = !(D);
-                        temp3 = 0;
-                        if((D & 0x80))temp3++;
-                        if((D & 0x40))temp3++;
-                        if((D & 0x20))temp3++;
-                        if((D & 0x10))temp3++;
-                        if((D & 0x08))temp3++;
-                        if((D & 0x04))temp3++;
-                        if((D & 0x02))temp3++;
-                        if((D & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x15: /* DCR D */
-                        btemp = D;
-                        D--;
-                        if((btemp & 0x0F) < (D & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((D & 0x80))*SIGN = 1;
-                        *ZERO = !(D);
-                        temp3 = 0;
-                        if((D & 0x80))temp3++;
-                        if((D & 0x40))temp3++;
-                        if((D & 0x20))temp3++;
-                        if((D & 0x10))temp3++;
-                        if((D & 0x08))temp3++;
-                        if((D & 0x04))temp3++;
-                        if((D & 0x02))temp3++;
-                        if((D & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x16: /* MVI D, 0x?? */
-                        D = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x17: /* RAL */
-                        btemp = A;
-                        A = A << 1;
-                        btemp &= 0x80;
-                        if(btemp)btemp = 0x01;
-                        A |= btemp;
-                        *CARRY = 0;
-                        *CARRY |= btemp;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0x18: /* DB 0x18 */
-
-                case 0x19: /* DAD DE */
-                        temp = (D << 8) | E;
-                        temp2 = (H << 8) | L;
-                        temp2 += temp;
-                        H = temp2 >> 8;
-                        L = temp2 & 0xFF;
-                        if(temp2 >= 0x10000)*CARRY = 1;
-                        else *CARRY = 0;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x1A: /* LDAX DE */
-                        A = read_memory(((D << 8) | E));
-                        cycle_count -= 7;
-                        break;
-
-                case 0x1B: /* DCX DE */
-                        temp = (D << 8) | E;
-                        temp--;
-                        D = temp >> 8;
-                        E = temp & 0xFF;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x1C: /* INR E */
-                        temp = E;
-                        E++;
-                        if((temp & 0x0F) > (E & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((E & 0x80))*SIGN = 1;
-                        *ZERO = !(E);
-                        temp3 = 0;
-                        if((E & 0x80))temp3++;
-                        if((E & 0x40))temp3++;
-                        if((E & 0x20))temp3++;
-                        if((E & 0x10))temp3++;
-                        if((E & 0x08))temp3++;
-                        if((E & 0x04))temp3++;
-                        if((E & 0x02))temp3++;
-                        if((E & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x1D: /* DCR E */
-                        temp = E;
-                        E--;
-                        if((temp & 0x0F) < (E & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((E & 0x80))*SIGN = 1;
-                        *ZERO = !(E);
-                        temp3 = 0;
-                        if((E & 0x80))temp3++;
-                        if((E & 0x40))temp3++;
-                        if((E & 0x20))temp3++;
-                        if((E & 0x10))temp3++;
-                        if((E & 0x08))temp3++;
-                        if((E & 0x04))temp3++;
-                        if((E & 0x02))temp3++;
-                        if((E & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x1E: /* MVI E, 0x?? */
-                        E = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x1F: /* RAR */
-                        btemp = A;
-                        A = A >> 1;
-                        btemp &= 0x01;
-                        if(btemp)btemp = 0x80;
-                        A |= btemp;
-                        *CARRY = 0;
-                        *CARRY |= btemp;
-                        if(*CARRY)*CARRY = 1;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0x20: /* DB 20 ???(RIM ???) */
-
-                case 0x21: /* LXI HL, 0x???? */
-                        H = read_memory(PC + 1);
-                        L = read_memory(PC);
-                        PC += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x22: /* SHLD 0x???? */
-                        temp = ((read_memory(PC + 1) << 8) | read_memory(PC));
-                        write_memory((temp + 1),H);
-                        write_memory(temp,L);
-                        PC += 2;
-                        cycle_count -= 16;
-                        break;
-
-                case 0x23: /* INX HL */
-                        temp = ((H << 8) | L);
-                        temp++;
-                        H = temp >> 8;
-                        L = temp & 0xFF;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x24: /* INR H */
-                        temp = H;
-                        H++;
-                        if((temp & 0x0F) > (H & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((H & 0x80))*SIGN = 1;
-                        *ZERO = !(H);
-                        temp3 = 0;
-                        if((H & 0x80))temp3++;
-                        if((H & 0x40))temp3++;
-                        if((H & 0x20))temp3++;
-                        if((H & 0x10))temp3++;
-                        if((H & 0x08))temp3++;
-                        if((H & 0x04))temp3++;
-                        if((H & 0x02))temp3++;
-                        if((H & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x25: /* DCR H */
-                        temp = H;
-                        H--;
-                        if((temp & 0x0F) < (H & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((H & 0x80))*SIGN = 1;
-                        *ZERO = !(H);
-                        temp3 = 0;
-                        if((H & 0x80))temp3++;
-                        if((H & 0x40))temp3++;
-                        if((H & 0x20))temp3++;
-                        if((H & 0x10))temp3++;
-                        if((H & 0x08))temp3++;
-                        if((H & 0x04))temp3++;
-                        if((H & 0x02))temp3++;
-                        if((H & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x26: /* MVI H, 0x?? */
-                        H = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x27: /* DAA */
-                        if((A & 0x0F) > 9 || (*AUX_CARRY == 1))
-                        {
-                                A += 0x06;
-                                *AUX_CARRY = 1;
-                        }
-                        else *AUX_CARRY = 0;
-                        if(A > 0x9F || (*CARRY == 1))
-                        {
-                                A += 0x60;
-                                *CARRY = 1;
-                        }
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                //case 0x28: /* DB 0x28 */
-
-                case 0x29: /* DAD HL */
-                        temp = (H << 8) | L;
-                        temp += temp;
-                        H = temp >> 8;
-                        L = temp & 0xFF;
-                        if(temp >= 0x10000)*CARRY = 1;
-                        else *CARRY = 0;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x2A: /* LHLD, 0x???? */
-                        temp = ((read_memory(PC + 1) << 8) | read_memory(PC));
-                        H = read_memory(temp + 1);
-                        L = read_memory(temp);
-                        PC += 2;
-                        cycle_count -= 16;
-                        break;
-
-                case 0x2B: /* DCX HL */
-                        temp = (H << 8) | L;
-                        temp--;
-                        H = temp >> 8;
-                        L = temp & 0xFF;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x2C: /* INR L */
-                        temp = L;
-                        L++;
-                        if((temp & 0x0F) > (L & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((L & 0x80))*SIGN = 1;
-                        *ZERO = !(L);
-                        temp3 = 0;
-                        if((L & 0x80))temp3++;
-                        if((L & 0x40))temp3++;
-                        if((L & 0x20))temp3++;
-                        if((L & 0x10))temp3++;
-                        if((L & 0x08))temp3++;
-                        if((L & 0x04))temp3++;
-                        if((L & 0x02))temp3++;
-                        if((L & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x2D: /* DCR L */
-                        temp = L;
-                        L--;
-                        if((temp & 0x0F) < (L & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((L & 0x80))*SIGN = 1;
-                        *ZERO = !(L);
-                        temp3 = 0;
-                        if((L & 0x80))temp3++;
-                        if((L & 0x40))temp3++;
-                        if((L & 0x20))temp3++;
-                        if((L & 0x10))temp3++;
-                        if((L & 0x08))temp3++;
-                        if((L & 0x04))temp3++;
-                        if((L & 0x02))temp3++;
-                        if((L & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x2E: /* MVI L, 0x?? */
-                        L = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x2F: /* CMA */
-                        A = ~A;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0x30: /* DB 0x30 ???(SIM ???) */
-
-                case 0x31: /* LXI SP, 0x???? */
-                        SP = ((read_memory(PC + 1) << 8) | read_memory(PC));
-                        PC += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x32: /* STA 0x???? */
-                        write_memory((read_memory(PC + 1) << 8) | read_memory(PC),A);
-                        PC += 2;
-                        cycle_count -= 13;
-                        break;
-
-                case 0x33: /* INX SP */
-                        SP++;
-                        cycle_count -= 5;
-
-                case 0x34: /* INR M */
-                        wtemp = read_memory(((H << 8) | L));
-                        wtemp2 = temp;
-                        wtemp++;
-                        write_memory(((H << 8) | L),wtemp);
-                        if((wtemp2 & 0x0F) > (wtemp & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((wtemp & 0x8000))*SIGN = 1;
-                        *ZERO = !(wtemp);
-                        temp3 = 0;
-                        if((wtemp & 0x8000))temp3++;
-                        if((wtemp & 0x4000))temp3++;
-                        if((wtemp & 0x2000))temp3++;
-                        if((wtemp & 0x1000))temp3++;
-                        if((wtemp & 0x0800))temp3++;
-                        if((wtemp & 0x0400))temp3++;
-                        if((wtemp & 0x0200))temp3++;
-                        if((wtemp & 0x0100))temp3++;
-                        if((wtemp & 0x0080))temp3++;
-                        if((wtemp & 0x0040))temp3++;
-                        if((wtemp & 0x0020))temp3++;
-                        if((wtemp & 0x0010))temp3++;
-                        if((wtemp & 0x0008))temp3++;
-                        if((wtemp & 0x0004))temp3++;
-                        if((wtemp & 0x0002))temp3++;
-                        if((wtemp & 0x0001))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 10;
-                        break;
-
-                case 0x35: /* DCR M */
-                        wtemp = read_memory(((H << 8) | L));
-                        wtemp2 = temp;
-                        wtemp--;
-                        write_memory(((H << 8) | L),wtemp);
-                        if((wtemp2 & 0x0F) < (wtemp & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((wtemp & 0x8000))*SIGN = 1;
-                        *ZERO = !(wtemp);
-                        temp3 = 0;
-                        if((wtemp & 0x8000))temp3++;
-                        if((wtemp & 0x4000))temp3++;
-                        if((wtemp & 0x2000))temp3++;
-                        if((wtemp & 0x1000))temp3++;
-                        if((wtemp & 0x0800))temp3++;
-                        if((wtemp & 0x0400))temp3++;
-                        if((wtemp & 0x0200))temp3++;
-                        if((wtemp & 0x0100))temp3++;
-                        if((wtemp & 0x0080))temp3++;
-                        if((wtemp & 0x0040))temp3++;
-                        if((wtemp & 0x0020))temp3++;
-                        if((wtemp & 0x0010))temp3++;
-                        if((wtemp & 0x0008))temp3++;
-                        if((wtemp & 0x0004))temp3++;
-                        if((wtemp & 0x0002))temp3++;
-                        if((wtemp & 0x0001))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 10;
-                        break;
-
-                case 0x36: /* MVI M, 0x?? */
-                        wtemp = (H << 8) | L;
-                        write_memory(wtemp,read_memory(PC));
-                        PC++;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x37: /* STC (SET CARRY) */
-                        *CARRY = 1;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0x38 /* DB 0x38 */
-
-                case 0x39: /* DAD SP */
-                        temp = (H << 8) | L;
-                        temp += SP;
-                        H = temp >> 8;
-                        L = temp & 0xFF;
-                        if(temp >= 0x10000)*CARRY = 1;
-                        else *CARRY = 0;
-                        cycle_count -= 10;
-                        break;
-
-                case 0x3A: /* LDA, 0x???? */
-                        temp = (read_memory(PC + 1) << 8) | read_memory(PC);
-                        A = read_memory(temp);
-                        PC += 2;
-                        cycle_count -= 13;
-                        break;
-
-                case 0x3B: /* DCX SP */
-                        SP--;
-                        cycle_count -= 5;
-                        break;
-
-                case 0x3C: /* INR A */
-                        temp = A;
-                        A++;
-                        if((temp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x3D: /* DCR A */
-                        temp = A;
-                        A--;
-                        if((temp & 0x0F) < (A & 0x0F))*AUX_CARRY = 1;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 5;
-                        break;
-
-                case 0x3E: /* MVI A, 0x?? */
-                        A = read_memory(PC);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0x3F: /* CMC */
-                        *CARRY = ~*CARRY;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x40: /* MOV B,B */
-                        B = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x41: /* MOV B,C */
-                        B = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x42: /* MOV B,D */
-                        B = D;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x43: /* MOV B,E */
-                        B = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x44: /* MOV B,H */
-                        B = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x45: /* MOV B,L */
-                        B = L;      
-                        cycle_count -= 4;
-                        break;
-
-                case 0x46: /* MOV B,M */
-                        temp = (H << 8) | L;
-                        B = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x47: /* MOV B,A */
-                        B = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x48: /* MOV C,B */
-                        C = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x49: /* MOV C,C */
-                        C = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x4A: /* MOV C,D */
-                        C = D;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x4B: /* MOV C,E */
-                        C = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x4C: /* MOV C,H */
-                        C = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x4D: /* MOV C,L */
-                        C = L;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x4E: /* MOV C,M */
-                        temp = (H << 8) | L;
-                        C = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x4F: /* MOV C,A */
-                        C = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x50: /* MOV D,B */
-                        D = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x51: /* MOV D,C */
-                        D = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x52: /* MOV D,D */
-                        D = D;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x53: /* MOV D,E */
-                        D = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x54: /* MOV D,H */
-                        D = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x55: /* MOV D,L */
-                        D = L;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x56: /* MOV D,M */
-                        temp = (H << 8) | L;
-                        D = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x57: /* MOV D,A */
-                        D = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x58: /* MOV E,B */
-                        E = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x59: /* MOV E,C */
-                        E = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x5A: /* MOV E,D */
-                        E = D;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x5B: /* MOV E,E */
-                        E = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x5C: /* MOV E,H */
-                        E = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x5D: /* MOV E,L */
-                        E = L;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x5E: /* MOV E,M */
-                        temp = (H << 8) | L;
-                        E = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x5F: /* MOV E,A */
-                        E = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x60: /* MOV H,B */
-                        H = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x61: /* MOV H,C */
-                        H = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x62: /* MOV H,D */
-                        H = D;
-                        cycle_count -= 4;
-                        break;
-                        
-                case 0x63: /* MOV H,E */
-                        H = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x64: /* MOV H,H */
-                        H = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x65: /* MOV H,L */
-                        H = L;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x66: /* MOV H,M */
-                        temp = (H << 8) | L;
-                        H = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x67: /* MOV H,A */
-                        H = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x68: /* MOV L,B */
-                        L = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x69: /* MOV L,C */
-                        L = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x6A: /* MOV L,D */
-                        L = D;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x6B: /* MOV L,E */
-                        L = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x6C: /* MOV L,H */
-                        L = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x6D: /* MOV L,L */
-                        L = L;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x6E: /* MOV L,M */
-                        temp = (H << 8) | L;
-                        L = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x6F: /* MOV L,A */
-                        L = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x70: /* MOV M,B */
-                        temp = (H << 8) | L;
-                        write_memory(temp,B);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x71: /* MOV M,C */
-                        temp = (H << 8) | L;
-                        write_memory(temp,C);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x72: /* MOV M,D */
-                        temp = (H << 8) | L;
-                        write_memory(temp,D);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x73: /* MOV M,E */
-                        temp = (H << 8) | L;
-                        write_memory(temp,E);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x74: /* MOV M,H */
-                        temp = (H << 8) | L;
-                        write_memory(temp,H);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x75: /* MOV M,L */
-                        temp = (H << 8) | L;
-                        write_memory(temp,L);
-                        cycle_count -= 7;
-                        break;
-
-                //case 0x76: /* HLT */
-
-                case 0x77: /* MOV M,A */
-                        temp = (H << 8) | L;
-                        write_memory(temp,A);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x78: /* MOV A,B */
-                        A = B;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x79: /* MOV A,C */
-                        A = C;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x7A: /* MOV A,D */
-                        A = D;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x7B: /* MOV A,E */
-                        A = E;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x7C: /* MOV A,H */
-                        A = H;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x7D: /* MOV A,L */
-                        A = L;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x7E: /* MOV A,M */
-                        temp = (H << 8) | L;
-                        A = read_memory(temp);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x7F: /* MOV A,A */
-                        A = A;
-                        cycle_count -= 4;
-                        break;
-
-                case 0x80: /* ADD B */
-                        btemp = A;
-                        A += B;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x81: /* ADD C */
-                        btemp = A;
-                        A += C;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x82: /* ADD D */
-                        btemp = A;
-                        A += D;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x83: /* ADD E */
-                        btemp = A;
-                        A += E;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x84: /* ADD H */
-                        btemp = A;
-                        A += H;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x85: /* ADD L */
-                        btemp = A;
-                        A += L;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x86: /* ADD M */
-                        btemp = A;
-                        A += read_memory((H << 8) | L);
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x8A: /* ADC D */
-                        btemp = A;
-                        A = A + D + *CARRY;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp > A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x90: /* SUB B */
-                        btemp = A;
-                        A -= B;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A > btemp)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0x96: /* SUB M */
-                        btemp = A;
-                        A -= read_memory((H << 8) | L);
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A > btemp)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xA0: /* ANA B */
-                        A &= B;
-                        *AUX_CARRY = 0;
-                        *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xA6: /* ANA M */
-                        A &= read_memory((H << 8) | L);
-                        *AUX_CARRY = 0;
-                        *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xA7: /* ANA A */
-                        A &= A;
-                        *AUX_CARRY = 0;
-                        *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xA8: /* XRA B */
-                        A ^= B;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xAE: /* XRA M */
-                        A ^= read_memory((H << 8) | L);
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xAF: /* XRA A */
-                        A ^= A;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xB0: /* ORA B */
-                        A |= B;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xB4: /* ORA H */
-                        A |= H;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xB5: /* ORA L */
-                        A |= L;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xB6: /* ORA M */
-                        A |= read_memory((H << 8) | L);
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xB7: /* ORA A */
-                        A |= A;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-                case 0xB8: /* CMP B */
-                        btemp = A - B;
-                        if((A & 0x0F) < (B & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < B)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == B)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xB9: /* CMP C */
-                        btemp = A - C;
-                        if((A & 0x0F) < (C & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < C)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == C)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xBA: /* CMP D */
-                        btemp = A - D;
-                        if((A & 0x0F) < (D & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < D)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == D)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xBB: /* CMP E */
-                        btemp = A - E;
-                        if((A & 0x0F) < (E & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < E)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == E)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xBC: /* CMP H */
-                        btemp = A - H;
-                        if((A & 0x0F) < (H & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < H)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == H)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xBD: /* CMP L */
-                        btemp = A - L;
-                        if((A & 0x0F) < (L & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < L)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == L)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xBE: /* CMP M */
-                        btemp2 = read_memory((H << 8) | L);
-                        btemp = A - btemp2;
-                        if((A & 0x0F) < (btemp2 & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < btemp2)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        *ZERO = 0;
-                        if(A == btemp2)*ZERO = 1;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 4;
-                        break;
-
-                case 0xC0: /* RNZ */
-                        if(!(*ZERO))
-                        {
-                                PC = memory[SP] | (memory[SP + 1] << 8);
-                                SP += 2;
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 5;
-                        break;
-
-                case 0xC1: /* POP BC */
-                        C = memory[SP];
-                        B = memory[SP + 1];
-                        SP += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xC2:  /* JNZ 0x???? */
-                        if(!(*ZERO))PC = (read_memory(PC + 1) << 8) | read_memory(PC);     
-                        else PC +=2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xC3:  /* JMP 0x???? */
-                        PC = (read_memory(PC + 1) << 8) | read_memory(PC);     
-                        cycle_count -= 10;
-                        break;
-
-                case 0xC4: /* CNZ 0x???? */
-                        PC += 2;
-                        if(!(*ZERO))
-                        {
-                                memory[SP - 1] = PC >> 8;
-                                memory[SP - 2] = PC & 0xFF;
-                                SP -= 2;
-                                PC -= 2;
-                                PC = (read_memory(PC + 1) << 8) | read_memory(PC);
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 11;
-                        break;
-
-                case 0xC5: /* PUSH BC */
-                        memory[SP - 1] = B;
-                        memory[SP - 2] = C;
-                        SP -= 2;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xC6: /* ADI 0x?? */
-                        btemp = A;
-                        wtemp = A;
-                        wtemp += read_memory(PC);
-                        A += read_memory(PC);
-                        PC++;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(wtemp >= 0x100)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xC7: /* RST 0 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xC8: /* RZ */
-                        if(*ZERO)
-                        {
-                                PC = memory[SP] | (memory[SP + 1] << 8);
-                                SP += 2;
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 5;
-                        break;
-
-                case 0xC9: /* RET */
-                        PC = memory[SP] | (memory[SP + 1] << 8);
-                        SP += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xCA:  /* JZ 0x???? */
-                        if(*ZERO)PC = (read_memory(PC + 1) << 8) | read_memory(PC);     
-                        else PC +=2;
-                        cycle_count -= 10;
-                        break;
-
-                //case 0xCB: /* DB 0xCB */
-
-                case 0xCC: /* CZ 0x???? */
-                        PC += 2;
-                        if(*ZERO)
-                        {
-                                memory[SP - 1] = PC >> 8;
-                                memory[SP - 2] = PC & 0xFF;
-                                SP -= 2;
-                                PC -= 2;
-                                PC = (read_memory(PC + 1) << 8) | read_memory(PC);
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 11;
-                        break;
-
-                case 0xCD: /* CALL 0x???? */
-                        PC += 2;
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC -= 2;
-                        PC = (read_memory(PC + 1) << 8) | read_memory(PC);
-                        cycle_count -= 17;
-                        break;
-
-                case 0xCF: /* RST 1 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x08;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xD0: /* RNC */
-                        if(!(*CARRY))
-                        {
-                                PC = memory[SP] | (memory[SP + 1] << 8);
-                                SP += 2;
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 5;
-                        break;
-
-                case 0xD1: /* POP DE */
-                        E = memory[SP];
-                        D = memory[SP + 1];
-                        SP += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xD2:  /* JNC 0x???? */
-                        if(!(*CARRY))PC = (read_memory(PC + 1) << 8) | read_memory(PC);     
-                        else PC +=2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xD3: /* OUT 0x?? */
-                        invaders_out(read_memory(PC),A);
-                        PC++;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xD4: /* CNC 0x???? */
-                        PC += 2;
-                        if(!(*CARRY))
-                        {
-                                memory[SP - 1] = PC >> 8;
-                                memory[SP - 2] = PC & 0xFF;
-                                SP -= 2;
-                                PC -= 2;
-                                PC = (read_memory(PC + 1) << 8) | read_memory(PC);
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 11;
-                        break;
-
-                case 0xD5: /* PUSH DE */
-                        memory[SP - 1] = D;
-                        memory[SP - 2] = E;
-                        SP -= 2;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xD6: /* SUI 0x?? */
-                        btemp = A;
-                        A -= read_memory(PC);
-                        PC++;
-                        if((btemp & 0x0F) < (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(btemp < A)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xD7: /* RST 2 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x10;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xD8: /* RC */
-                        if(*CARRY)
-                        {
-                                PC = memory[SP] | (memory[SP + 1] << 8);
-                                SP += 2;
-                                cycle_count -= 6;
-                        }
-                        cycle_count -= 5;
-                        break;
-
-                //case 0xD9: /* DB 0xD9 */
-
-                case 0xDA:  /* JC 0x???? */
-                        if(*CARRY)PC = (read_memory(PC + 1) << 8) | read_memory(PC);     
-                        else PC +=2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xDB: /* IN 0x?? */
-                        A = invaders_in(read_memory(PC));
-                        PC++;
-                        cycle_count -= 10;
-                        break;
-
-                //case 0xDD: /* DB 0xDD */
-
-                case 0xDE: /* SBI 0x?? */
-                        btemp = A;
-                        A = A - read_memory(PC) - *CARRY;
-                        PC += 1;
-                        if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A > btemp)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xDF: /* RST 3 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x18;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xE1: /* POP HL */
-                        L = memory[SP];
-                        H = memory[SP + 1];
-                        SP += 2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xE3: /* XTHL */
-                        btemp = memory[SP];
-                        btemp2  = memory[SP + 1];
-                        SP += 2;
-                        memory[SP - 1] = H;
-                        memory[SP - 2] = L;
-                        SP -= 2;
-                        L = btemp;
-                        H = btemp2;
-                        cycle_count -= 18;
-                        break;
-
-                case 0xE5: /* PUSH HL */
-                        memory[SP - 1] = H;
-                        memory[SP - 2] = L;
-                        SP -= 2;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xE6: /* ANI 0x?? */
-                        A &= read_memory(PC);
-                        PC++;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xE7: /* RST 4 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x20;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xE9: /* PCHL */
-                        PC = (H << 8) | L;
-                        cycle_count -= 5;
-                        break;
-
-                case 0xEB: /* XCHG HL,DE */
-                        btemp = H;
-                        btemp2 = D;
-                        H = btemp2;
-                        D = btemp;
-                        btemp = L;
-                        btemp2 = E;
-                        L = btemp2;
-                        E = btemp;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0xED: /* DB 0xED */
-
-                case 0xEF: /* RST 5 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x28;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xF1: /* POP PSW */
-                        PSW = memory[SP];
-                        set_flags();
-                        A = memory[SP + 1];
-                        SP += 2;
-                        cycle_count -= 10;
-                        break;
-                               
-                case 0xF5: /* PUSH PSW */
-                        PSW = GET_PSW();
-                        memory[SP - 1] = A;
-                        memory[SP - 2] = PSW;
-                        SP -= 2;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xF6: /* ORI 0x?? */
-                        temp = read_memory(PC);
-                        PC++;
-                        A ^= temp;
-                        *CARRY = 0;
-                        *AUX_CARRY = 0;
-                        *SIGN = 0;
-                        if((A & 0x80))*SIGN = 1;
-                        *ZERO = !(A);
-                        temp3 = 0;
-                        if((A & 0x80))temp3++;
-                        if((A & 0x40))temp3++;
-                        if((A & 0x20))temp3++;
-                        if((A & 0x10))temp3++;
-                        if((A & 0x08))temp3++;
-                        if((A & 0x04))temp3++;
-                        if((A & 0x02))temp3++;
-                        if((A & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        cycle_count -= 7;
-                        break;
-
-                case 0xF7: /* RST 6 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x30;
-                        cycle_count -= 11;
-                        break;
-
-                case 0xFA:  /* JM 0x???? */
-                        if(*SIGN)PC = (read_memory(PC + 1) << 8) | read_memory(PC);     
-                        else PC +=2;
-                        cycle_count -= 10;
-                        break;
-
-                case 0xFB: /* EI */
-                        INT = 1;
-                        cycle_count -= 4;
-                        break;
-
-                //case 0xFD: /* DB 0xFD */
-
-                case 0xFE: /* CPI A,0x?? */
-                        btemp2 = read_memory(PC); 
-                        btemp = A - btemp2;
-                        if((A & 0x0F) < (btemp & 0x0F))*AUX_CARRY = 1;
-                        else *AUX_CARRY = 0;
-                        if(A < btemp2)*CARRY = 1;
-                        else *CARRY = 0;
-                        *SIGN = 0;
-                        if((btemp & 0x80))*SIGN = 1;
-                        if(A == btemp2)*ZERO = 1;
-                        else *ZERO = 0;
-                        temp3 = 0;
-                        if((btemp & 0x80))temp3++;
-                        if((btemp & 0x40))temp3++;
-                        if((btemp & 0x20))temp3++;
-                        if((btemp & 0x10))temp3++;
-                        if((btemp & 0x08))temp3++;
-                        if((btemp & 0x04))temp3++;
-                        if((btemp & 0x02))temp3++;
-                        if((btemp & 0x01))temp3++;
-                        *PARITY = !(temp3 % 2);
-                        PC++;
-                        cycle_count -= 7;
-                        break;
-
-                case 0xFF: /* RST 7 */
-                        memory[SP - 1] = PC >> 8;
-                        memory[SP - 2] = PC & 0xFF;
-                        SP -= 2;
-                        PC = 0x38;
-                        cycle_count -= 11;
-                        break;
-
-                default:
-                        if(_DEBUG)
-                        {
-                        fprintf(debug,"\nFehler bei Offset %4X\n\n",(PC - 1));
-                        fprintf(debug,"Opcode : %2X\n\n",memory[PC - 1]);
-                        fprintf(debug,"A = %2X\tB = %2X\tC = %2X\tSP = %4X\n",A,B,C,SP);
-                        fprintf(debug,"D = %2X\tE = %2X\tH = %2X\tL  = %4X\n\n",D,E,H,L);
-                        temp = memory[SP] | (memory[SP + 1] << 8);
-                        SP += 2;
-                        temp2 = memory[SP] | (memory[SP + 1] << 8);
-                        SP += 2;
-                        temp3 = memory[SP] | (memory[SP + 1] << 8);
-                        SP += 2;
-                        btemp = memory[SP];
-                        SP += 1;
-                        btemp2 = memory[SP];
-                        SP += 1;
-                        btemp3 = memory[SP];
-                        SP += 1;
-                        //fprintf(debug,"Stack = %2X %2X %2X %2X %2X %2X %2X %2X %2X\n\n",(temp >> 8),(temp & 0xFF),(temp2 >> 8),(temp2 & 0xFF),(temp3 >> 8),(temp3 & 0xFF),btemp,btemp2,btemp3);
-                        fprintf(debug,"PARITY = %2X\tCARRY = %2X\tAUX_CARRY = %2X\n",*PARITY,*CARRY,*AUX_CARRY);
-                        fprintf(debug,"ZERO   = %2X\tSIGN  = %2X\tPSW       = %2X\n",*ZERO,*SIGN,PSW);
-                        fprintf(debug,"X1     = %2X\tX2    = %2X\tX3        = %2X\n\n",*FLAG_X1,*FLAG_X2,*FLAG_X3);
-                        //fprintf(debug,"cycle_count = %d\n",cycle_count);
-                        }
-                        return 0;
+                        dump();
                 }
+                old_cmd5 = old_cmd4;
+                old_cmd4 = old_cmd3;
+                old_cmd3 = old_cmd2;
+                old_cmd2 = old_cmd1;
+                old_cmd1 = memory[PC];
+                cycle_count = decode(memory[PC++], cycle_count);
+                if(cycle_count == -1000)
+                {
+                        dump();
+                }
+                //printf("cycle_count = %d\n", cycle_count);
+                /*if(cycle_count == 0)
+                {
+                        return 0;
+                }*/
 
         } while(cycle_count > 0);
+        
+        if(ERROR == 1)
+        {
+                dump();
+                exit(5);
+                // return -1000;
+        }
 
-        return (cycles - cycle_count);
+        return cycles - cycle_count;
 }
 
 void interrupt(void)
@@ -2351,7 +909,7 @@ void reset(void)
         E = 0x00;
         H = 0x00;
         L = 0x00;
-        test_zero = 0;
+        // test_zero = 0;
         INT = 1;
         set_flags();
 }
