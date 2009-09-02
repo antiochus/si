@@ -78,7 +78,7 @@ BYTE btemp, btemp2, btemp3;
 
 inline BYTE read_memory(WORD offset)
 {
-#ifdef DEBUGX
+#ifdef DEBUG_MEM
         if(SPECIALROM == 0)
         {
                 if(offset <= VIDRAM_END)
@@ -112,6 +112,7 @@ inline BYTE read_memory(WORD offset)
 
 inline void write_memory(WORD offset,BYTE data)
 {                              
+#ifdef DEBUG_MEM
         if(offset >= WORKRAM_BEGIN && offset <= VIDRAM_END)
         {
                 memory[offset] = data;
@@ -126,6 +127,13 @@ inline void write_memory(WORD offset,BYTE data)
                 //dump();
                 exit(1);
         }
+#else
+        memory[offset] = data;
+        if(offset >= VIDRAM_BEGIN && offset <= VIDRAM_END)
+        {
+                update_buffer(offset, data);
+        }
+#endif
 }
 
 inline void set_flags(void)

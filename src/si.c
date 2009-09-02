@@ -36,16 +36,16 @@ WORD shiftdata_2 = 0;
 FILE* debug = NULL;
 FILE* debug2 = NULL;
 
-SAMPLE* sample3_1 = NULL;
-SAMPLE* sample3_2 = NULL;
-SAMPLE* sample3_3 = NULL;
-SAMPLE* sample3_4 = NULL;
-
-SAMPLE* sample5_1 = NULL;
-SAMPLE* sample5_2 = NULL;
-SAMPLE* sample5_3 = NULL;
-SAMPLE* sample5_4 = NULL;
-SAMPLE* sample5_5 = NULL;
+SAMPLE* sample_00 = NULL;
+SAMPLE* sample_01 = NULL;
+SAMPLE* sample_02 = NULL;
+SAMPLE* sample_03 = NULL;
+SAMPLE* sample_04 = NULL;
+SAMPLE* sample_05 = NULL;
+SAMPLE* sample_06 = NULL;
+SAMPLE* sample_07 = NULL;
+SAMPLE* sample_08 = NULL;
+SAMPLE* sample_09 = NULL;
 
 BITMAP* double_buffer;
 
@@ -104,54 +104,18 @@ WORD load_rom(char* filename, short offset, short size)
         return 1;
 }
 
-WORD load_samples(char* filename, WORD sample_number)
+WORD load_samples(char* filename, SAMPLE** sample)
 {
-        if(sample_number == 31)
+        *sample = load_sample(filename);
+        if(!*sample)
         {
-                sample3_1 = load_sample(filename);
-                if(!sample3_1){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
+                printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);
+                return 0;
         }
-        else if(sample_number == 32)
+        else
         {
-                sample3_2 = load_sample(filename);
-                if(!sample3_2){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
+                return 1;
         }
-        else if(sample_number == 33)
-        {
-                sample3_3 = load_sample(filename);
-                if(!sample3_3){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        else if(sample_number == 34)
-        {
-                sample3_4 = load_sample(filename);
-                if(!sample3_4){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        else if(sample_number == 51)
-        {
-                sample5_1 = load_sample(filename);
-                if(!sample5_1){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        else if(sample_number == 52)
-        {
-                sample5_2 = load_sample(filename);
-                if(!sample5_2){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        else if(sample_number == 53)
-        {
-                sample5_3 = load_sample(filename);
-                if(!sample5_3){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        else if(sample_number == 54)
-        {
-                sample5_4 = load_sample(filename);
-                if(!sample5_4){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        else if(sample_number == 55)
-        {
-                sample5_5 = load_sample(filename);
-                if(!sample5_5){printf("Ein Fehler ist beim Einlesen der Datei %s aufgetreten\n",filename);return 0;}
-        }
-        return 1;
 }
 
 WORD load_roms(WORD game)
@@ -215,16 +179,28 @@ WORD load_roms(WORD game)
 
 WORD load_sounds(WORD game)
 {                                                       
-        if(!load_samples("samples/0.wav",31))return 0;
-        if(!load_samples("samples/1.wav",32))return 0;
-        if(!load_samples("samples/2.wav",33))return 0;
-        if(!load_samples("samples/12.wav",34))return 0;
-        if(!load_samples("samples/4.wav",51))return 0;
-        if(!load_samples("samples/5.wav",52))return 0;
-        if(!load_samples("samples/6.wav",53))return 0;
-        if(!load_samples("samples/7.wav",54))return 0;
-        if(!load_samples("samples/3.wav",55))return 0;
+        if(!load_samples("samples/0.wav", &sample_00))return 0; // Mystery ship
+        if(!load_samples("samples/1.wav", &sample_01))return 0; // Shot
+        if(!load_samples("samples/2.wav", &sample_02))return 0; // Base hit
+        if(!load_samples("samples/3.wav", &sample_03))return 0; // Invader hit
+        if(!load_samples("samples/4.wav", &sample_04))return 0; // Walk 1
+        if(!load_samples("samples/5.wav", &sample_05))return 0; // Walk 2
+        if(!load_samples("samples/6.wav", &sample_06))return 0; // Walk 3
+        if(!load_samples("samples/7.wav", &sample_07))return 0; // Walk 4
+        if(!load_samples("samples/8.wav", &sample_08))return 0; // Mystery ship hit
+        if(!load_samples("samples/9.wav", &sample_09))return 0; // Extra life ?
         return 1;
+}
+
+int last_sound_03 = 0x00;
+int last_sound_05 = 0x00;
+
+inline void try_sound(WORD op, BYTE mask, SAMPLE* sample, BYTE loop)
+{
+        if((!(last_sound_03 & mask)) && (op & mask))
+        {
+                  play_sample(sample, 255, 128, 1000, loop);
+        }
 }
 
 inline void invaders_sound(WORD channel, WORD op)
@@ -233,18 +209,34 @@ inline void invaders_sound(WORD channel, WORD op)
         {
                 if(channel == 3)
                 {
-                if(op & 0x01)play_sample(sample3_1, 255, 128, 1000, FALSE);
-                if(op & 0x02)play_sample(sample3_2, 255, 128, 1000, FALSE);
-                if(op & 0x04)play_sample(sample3_3, 255, 128, 1000, FALSE);
-                if(op & 0x10)play_sample(sample3_4, 255, 128, 1000, FALSE);
+                        try_sound(op, 0x01, sample_00, 1); // Mystery ship
+                        if(!(op & 0x01))stop_sample(sample_00);
+                        try_sound(op, 0x02, sample_01, 0); // Shot
+                        try_sound(op, 0x04, sample_02, 0); // Base Hit
+                        try_sound(op, 0x08, sample_03, 0); // Invader Hit
+                        try_sound(op, 0x10, sample_09, 0); // Extra life
+                        if(last_sound_03 != op)
+                        {
+                                //printf("%2X", op);
+                                //fflush(stdout);
+                                last_sound_03 = op;               
+                        }
+                        
                 }
-                else if(channel == 5)
+                else 
+                if(channel == 5)
                 {
-                if(op & 0x01)play_sample(sample5_1, 255, 128, 1000, FALSE);
-                if(op & 0x02)play_sample(sample5_2, 255, 128, 1000, FALSE);
-                if(op & 0x04)play_sample(sample5_3, 255, 128, 1000, FALSE);
-                if(op & 0x10)play_sample(sample5_4, 255, 128, 1000, FALSE);
-                if(op & 0x20)play_sample(sample5_5, 255, 128, 1000, FALSE);
+                        if(op & 0x01)play_sample(sample_07, 255, 128, 1000, FALSE); // Walk 4
+                        if(op & 0x02)play_sample(sample_04, 255, 128, 1000, FALSE); // Walk 1
+                        if(op & 0x04)play_sample(sample_05, 255, 128, 1000, FALSE); // Walk 2
+                        if(op & 0x08)play_sample(sample_06, 255, 128, 1000, FALSE); // Walk 3
+                        if((!(last_sound_05 & 0x10)) && (op & 0x10))play_sample(sample_08, 255, 128, 1000, FALSE); // Mystery Ship hit
+                        if(last_sound_05 != op)
+                        {
+                                //printf("%2X", op);
+                                //fflush(stdout);
+                                last_sound_05 = op;               
+                        }
                 }
         }
 }
@@ -388,6 +380,14 @@ void invaders_out(BYTE port,BYTE op)
         {
                 invaders_sound(5,op);
         }
+        else
+        if(port == 6)
+        {
+                //
+        }
+        else
+        {
+        }
 }
 
 WORD invaders_in(BYTE port)
@@ -526,7 +526,7 @@ int main(int argc, char* argv[])
                 }
 
                 ts.tv_sec = 0;
-                ts.tv_nsec = (i8080_clock + i8080_time - clock()) * 1000;
+                ts.tv_nsec = (i8080_time - (clock() -i8080_clock)) * 1000;
                 nanosleep(&ts, NULL);
         }
         if(_DEBUG)fclose(debug);
@@ -536,15 +536,16 @@ int main(int argc, char* argv[])
 
         if(SOUND)
         {
-                destroy_sample(sample3_1);
-                destroy_sample(sample3_2);
-                destroy_sample(sample3_3);
-                destroy_sample(sample3_4);
-                destroy_sample(sample5_1);
-                destroy_sample(sample5_2);
-                destroy_sample(sample5_3);
-                destroy_sample(sample5_4);
-                destroy_sample(sample5_5);
+                destroy_sample(sample_00);
+                destroy_sample(sample_01);
+                destroy_sample(sample_02);
+                destroy_sample(sample_03);
+                destroy_sample(sample_04);
+                destroy_sample(sample_05);
+                destroy_sample(sample_06);
+                destroy_sample(sample_07);
+                destroy_sample(sample_08);
+                destroy_sample(sample_09);
         }
 
         allegro_exit();
