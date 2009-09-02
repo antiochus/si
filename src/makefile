@@ -7,7 +7,9 @@ OBJECTS:= $(patsubst %.c,%.o,$(SOURCE))
 OUTPUT=siemu
 
 all : $(OBJECTS)
-	$(CC) $(LDFLAGS) $(OBJECTS) -o $(OUTPUT)
+#	$(CC) $(LDFLAGS) $(OBJECTS) -o $(OUTPUT)
+	$(CC) $(LDFLAGS) cpu_new.o si.o -o siemu_new
+	$(CC) $(LDFLAGS) cpu_old.o si.o -o siemu_old
 
 release : override CFLAGS+=-O3
 release : clean all;

@@ -523,7 +523,6 @@ inline int decode_10(BYTE instruction, int cycle_count)
                                 opcode_sbb(lower);
                         }
                 }
-                cycle_count -= 4;
         }
         else /* AND / XOR / OR / CMP */
         {
@@ -746,6 +745,7 @@ inline int decode(BYTE instruction, int cycle_count)
 {
         BYTE *bsrc = NULL;
         BYTE *bdest = NULL;
+        //fprintf(debug, "%4X", PC - 1);
         switch(instruction & 0xC0) /* Upper two bits */
         {
                 case 0x00:
@@ -849,8 +849,9 @@ WORD cpu(WORD cycles)
                 //}
                 if(fdbg)
                 {
-                        dump();
+                        //dump();
                 }
+                dump(cycle_count);
                 old_cmd5 = old_cmd4;
                 old_cmd4 = old_cmd3;
                 old_cmd3 = old_cmd2;
@@ -859,7 +860,7 @@ WORD cpu(WORD cycles)
                 cycle_count = decode(memory[PC++], cycle_count);
                 if(cycle_count == -1000)
                 {
-                        dump();
+                        //dump();
                 }
                 //printf("cycle_count = %d\n", cycle_count);
                 /*if(cycle_count == 0)
@@ -869,9 +870,11 @@ WORD cpu(WORD cycles)
 
         } while(cycle_count > 0);
         
+        // fprintf(debug, "\n");
+
         if(ERROR == 1)
         {
-                dump();
+                //dump();
                 exit(5);
                 // return -1000;
         }

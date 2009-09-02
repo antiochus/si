@@ -233,7 +233,7 @@ inline void invaders_sound(WORD channel, WORD op)
         {
                 if(channel == 3)
                 {
-                if(op & 0x01)play_sample(sample3_1, 255, 128, 1000, TRUE);
+                if(op & 0x01)play_sample(sample3_1, 255, 128, 1000, FALSE);
                 if(op & 0x02)play_sample(sample3_2, 255, 128, 1000, FALSE);
                 if(op & 0x04)play_sample(sample3_3, 255, 128, 1000, FALSE);
                 if(op & 0x10)play_sample(sample3_4, 255, 128, 1000, FALSE);
@@ -455,7 +455,7 @@ int main(int argc, char* argv[])
                 {
 #endif
                         i8080_clock = clock();
-                        cpu_cycles = cpu(17067); // 33333 Cycles = 60 HZ(34133?)
+                        cpu_cycles = cpu(17067); // 2500); // 33333 Cycles = 60 HZ(34133?)
                         display_update += cpu_cycles;
 
                         if(cpu_cycles == -1000)return 6; 
@@ -486,7 +486,7 @@ int main(int argc, char* argv[])
 
                 ts.tv_sec = 0;
                 ts.tv_nsec = (i8080_clock + i8080_time - clock()) * 1000;
-                //nanosleep(&ts, NULL);
+                nanosleep(&ts, NULL);
         }
         if(_DEBUG)fclose(debug);
         if(_DEBUG == 2)fclose(debug2);

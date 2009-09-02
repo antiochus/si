@@ -1,3 +1,113 @@
+/*
+    This file is part of SI - A primitive, but simple Space Invaders emulator.
+    Copyright 1998 - 2009 Jens Mühlenhoff <j.muehlenhoff@gmx.de>
+
+    SI is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    SI is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with SI.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "si_types.h"
+#include "si.h"
+
+/*
+#define PUSH(b)  memory[SP - 1] = (b); SP--;;;  
+#define PULL()   memory[SP++];;;;          
+#define PUSH(b)  memory[SP] = (b); SP--  
+#define PULL()   memory[++SP]         
+*/
+
+#define GET_PSW()  ((*CARRY ? 0x01 : 0) | (*FLAG_X1 ? 0x02 : 0) |\
+                   (*PARITY ? 0x04 : 0) | (*FLAG_X2 ? 0x08 : 0) |\
+                   (*AUX_CARRY ? 0x10 : 0) | (*FLAG_X3 ? 0x20 : 0) |\
+                   (*ZERO ? 0x40 : 0) | (*SIGN ? 0x80 : 0))
+
+WORD _DEBUG = 0;
+
+WORD CODE_BEGIN = 0;
+WORD CODE_END = 0;
+WORD WORKRAM_BEGIN = 0;
+WORD WORKRAM_END = 0;
+WORD VIDRAM_BEGIN = 0;
+WORD VIDRAM_END = 0;
+WORD SPECIALRAM = 0;
+WORD SPECIALROM = 0;
+WORD SPECIALROM_SIZE = 0;
+
+WORD PC = 0x0001; /* Program Counter */
+WORD old_cmd1;
+WORD old_cmd2;
+WORD old_cmd3;
+WORD old_cmd4;
+WORD old_cmd5;
+WORD INTPC = 0;
+
+int ERROR = 0;
+
+/*
+   Register : SP = Stack Pointer, PSW = Processor Status Word,
+   A = Accumulator, B, C, D, E, H, L
+*/
+
+WORD SP = 0x23FF;
+BYTE PSW,A,B,C,D,E,H,L;
+BYTE SP_UPPER, SP_LOWER;
+
+/* Flags */
+WORD flag[8] = {0,1,0,0,0,0,0,0};
+/*flag[0] = 0   Carry Flag          */
+/*flag[1] = 0   Unused              */
+/*flag[2] = 0   Parity Flag         */
+/*flag[3] = 0   Unused              */
+/*flag[4] = 0   Auxillary Cary Flag */
+/*flag[5] = 0   Unused              */
+/*flag[6] = 0   Zero Flag           */
+/*flag[7] = 0   Sign Flag           */
+
+WORD* CARRY = &flag[0];
+WORD* FLAG_X1 = &flag[1];
+WORD* PARITY = &flag[2];
+WORD* FLAG_X2 = &flag[3];
+WORD* AUX_CARRY = &flag[4];
+WORD* FLAG_X3 = &flag[5];
+WORD* ZERO = &flag[6];
+WORD* SIGN = &flag[7];
+WORD INT = 1;
+
+/*
+WORD wdebug = 0;
+WORD BC = 0;
+uclock_t test_time = 0;
+*/
+
+#include "cpu_tools.h"
+#include "cpu_arithmetic.h"
+
+inline int decode(BYTE instruction, int cycle_count)
+{
+        BYTE btemp, btemp2;
+        WORD wtemp;
+        int temp, temp2, temp3;
+
+        // fprintf(debug, "%4X", PC - 1);
+        if(instruction == 0x94)
+        {
+                fprintf(stderr, "Hello World!\n");
+        }
+        switch(instruction)
+        {
         case 0x00: /* NOP (No Operation) [XCHG A,A]*/
                 cycle_count -= 4;
                 break;
@@ -1330,9 +1440,9 @@
                 btemp = A;
                 A = A - read_memory(PC) - *CARRY;
                 PC += 1;
-                if((btemp & 0x0F) > (A & 0x0F))*AUX_CARRY = 1;
+                if((btemp & 0x0F) < (A & 0x0F))*AUX_CARRY = 1;
                 else *AUX_CARRY = 0;
-                if(A > btemp)*CARRY = 1;
+                if(btemp < A)*CARRY = 1;
                 else *CARRY = 0;
                 *SIGN = 0;
                 if((A & 0x80))*SIGN = 1;
@@ -1441,7 +1551,7 @@
         case 0xF6: /* ORI 0x?? */
                 temp = read_memory(PC);
                 PC++;
-                A ^= temp;
+                A |= temp;
                 *CARRY = 0;
                 *AUX_CARRY = 0;
                 *SIGN = 0;
@@ -1483,7 +1593,7 @@
                 if((btemp & 0x80))*SIGN = 1;
                 if(A == btemp2)*ZERO = 1;
                 else *ZERO = 0;
-                parity(A);
+                parity(btemp);
                 PC++;
                 cycle_count -= 7;
                 break;
@@ -1497,7 +1607,133 @@
                 break;
 
         default:
-                if(_DEBUG)
+                dump(cycle_count);
+                return -1000;
+        }
+        return cycle_count;
+}
+
+WORD cpu(WORD cycles)
+{
+        int cycle_count = cycles;
+        int fdbg = 0;
+
+        do
+        {
+                //BC++;
+                if(!SPECIALROM)
                 {
+                        if(PC > CODE_END)
+                        {
+                                printf("PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                return -1000;
+                        }
                 }
-                exit(1);
+                else
+                {
+                        if(PC > (VIDRAM_END + SPECIALROM_SIZE))
+                        {
+                                printf("PC hat den Gueltigkeitsbereich verlassen\tPC = %4X\n",PC);
+                                return -1000;
+                        }
+                }
+
+                //if(DEBUG == 2 && wdebug)
+                if(_DEBUG == 2)
+                {
+                        //if(BC > 800000)
+                        //{
+                        //        fprintf(debug2,"%4X, %2X, %2X, %2X, ", PC, memory[PC], A, GET_PSW());
+                        //        fprintf(debug2,"%2X, %2X, %2X, %2X, %2X, %2X, ", B, C, D, E, H, L);
+                        //        fprintf(debug2,"%2X %2X %2X %2X %2X %2X\n", memory[SP], memory[SP + 1], memory[SP + 2], memory[SP + 3], memory[SP + 4], memory[SP + 5]);
+                        //}
+                        //if(BC > 850000)
+                        //{
+                        //        test_time = uclock();
+                        //        while(uclock() < test_time + 1829943);
+                        //        return 0;
+                        //}
+                        //1395520
+                        //if(BC > 1395000)
+                        //{
+                        //fprintf(debug2,"%d",BC);
+                        //if(PC == 0x15DE)fprintf(debug2,"HL = %4X",((H << 8) + L));
+                        //fprintf(debug2,"PC = %4X, Opcode = %2X, A = %2X, B = %2X, Stack = %2X %2X %2X %2X %2X %2X\n", PC, memory[PC], A, B, memory[SP + 1], memory[SP + 2], memory[SP + 3], memory[SP + 4], memory[SP + 5], memory[SP + 6]);
+                        //fprintf(debug2,"%4X, %2X, %2X, %2X, ", PC, memory[PC], A, GET_PSW());
+                        //fprintf(debug2,"%2X, %2X, %2X, %2X, %2X, %2X, ", B, C, D, E, H, L);
+                        //fprintf(debug2,"%2X %2X %2X %2X %2X %2X\n", memory[SP], memory[SP + 1], memory[SP + 2], memory[SP + 3], memory[SP + 4], memory[SP + 5]);
+                        //}
+                }
+                //if(PC == 0x1785)
+                //{
+                //        fdbg = 1;
+                //}
+                if(fdbg)
+                {
+                //        dump();
+                }
+                dump(cycle_count);
+                old_cmd5 = old_cmd4;
+                old_cmd4 = old_cmd3;
+                old_cmd3 = old_cmd2;
+                old_cmd2 = old_cmd1;
+                old_cmd1 = memory[PC];
+                cycle_count = decode(memory[PC++], cycle_count);
+                //if(cycle_count == -1000)
+                //{
+                //        dump();
+                //}
+                //printf("cycle_count = %d\n", cycle_count);
+                /*if(cycle_count == 0)
+                {
+                        return 0;
+                }*/
+
+        } while(cycle_count > 0);
+        
+        //fprintf(debug, "\n");
+
+        if(ERROR == 1)
+        {
+                //dump();
+                exit(5);
+                // return -1000;
+        }
+
+        return cycles - cycle_count;
+}
+
+void interrupt(void)
+{
+        memory[SP - 1] = PC >> 8;
+        memory[SP - 2] = PC & 0xFF;
+        SP -= 2;
+        PC = 0x08;
+        INT = 0;
+}
+
+void NMI(void)
+{
+        memory[SP - 1] = PC >> 8;
+        memory[SP - 2] = PC & 0xFF;
+        SP -= 2;
+        PC = 0x10;
+        INT = 0;
+}
+
+void reset(void)
+{
+        PC = 0x00;
+        SP = 0x23FF;
+        A = 0x00;
+        PSW = 0x00;
+        B = 0x00;
+        C = 0x00;
+        D = 0x00;
+        E = 0x00;
+        H = 0x00;
+        L = 0x00;
+        // test_zero = 0;
+        INT = 1;
+        set_flags();
+}

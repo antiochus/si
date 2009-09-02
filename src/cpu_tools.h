@@ -18,7 +18,7 @@
 
 #include <stdlib.h>
 
-void dump(void)
+void dump(int cycle_count)
 {
 
 DWORD temp, temp2, temp3;
@@ -26,6 +26,30 @@ WORD wtemp; //, wtemp2, wtemp3;
 BYTE btemp, btemp2, btemp3;
 //BYTE test_zero = 0;
 
+                        wtemp = SP;
+                        printf("\n%4X",(PC));
+                        printf("\t%2X %2X %2X %2X %2X %2X\t\t",memory[PC], old_cmd1, old_cmd2, old_cmd3, old_cmd4, old_cmd5);
+                        printf("%2X%2X%2X%4X",A,B,C,SP);
+                        printf("\t%2X%2X%2X%4X",D,E,H,L);
+                        temp = memory[SP] | (memory[SP + 1] << 8);
+                        SP += 2;
+                        temp2 = memory[SP] | (memory[SP + 1] << 8);
+                        SP += 2;
+                        temp3 = memory[SP] | (memory[SP + 1] << 8);
+                        SP += 2;
+                        btemp = memory[SP];
+                        SP += 1;
+                        btemp2 = memory[SP];
+                        SP += 1;
+                        btemp3 = memory[SP];
+                        SP += 1;
+                        printf("\tStack%2X%2X%2X%2X%2X%2X%2X%2X%2X",(BYTE)(temp >> 8),(BYTE)(temp & 0xFF),(BYTE)(temp2 >> 8),(BYTE)(temp2 & 0xFF),(BYTE)(temp3 >> 8),(BYTE)(temp3 & 0xFF),btemp,btemp2,btemp3);
+                        printf("\t%2X%2X%2X",*PARITY,*CARRY,*AUX_CARRY);
+                        printf("%2X%2X%2X",*ZERO,*SIGN,PSW);
+                        printf("%2X%2X%2X",*FLAG_X1,*FLAG_X2,*FLAG_X3);
+                        printf("%d", cycle_count);
+                        SP = wtemp;
+/*
                         wtemp = SP;
                         printf("\nOffset %4X\n\n",(PC));
                         printf("Opcodes : %2X %2X %2X %2X %2X %2X\n\n",memory[PC], old_cmd1, old_cmd2, old_cmd3, old_cmd4, old_cmd5);
@@ -47,8 +71,9 @@ BYTE btemp, btemp2, btemp3;
                         printf("PARITY = %2X\tCARRY = %2X\tAUX_CARRY = %2X\n",*PARITY,*CARRY,*AUX_CARRY);
                         printf("ZERO   = %2X\tSIGN  = %2X\tPSW       = %2X\n",*ZERO,*SIGN,PSW);
                         printf("X1     = %2X\tX2    = %2X\tX3        = %2X\n\n",*FLAG_X1,*FLAG_X2,*FLAG_X3);
-                        //fprintf(debug,"cycle_count = %d\n",cycle_count);
+                        printf("cycle_count = %d\n", cycle_count);
                         SP = wtemp;
+*/
 }
 
 inline BYTE read_memory(WORD offset)
@@ -59,7 +84,7 @@ inline BYTE read_memory(WORD offset)
                 else
                 {
                         printf("Leseversuch an Offset %4X\n",offset);
-                        dump();
+                        //dump();
                         exit(1);
                 }
         }
@@ -69,7 +94,7 @@ inline BYTE read_memory(WORD offset)
                 else
                 {
                         printf("Leseversuch an Offset %4X\n",offset);
-                        dump();
+                        //dump();
                         exit(1);
                 }
         }
@@ -80,7 +105,7 @@ inline void write_memory(WORD offset,BYTE data)
         if(offset == 0x1A11)
         {
                 printf("Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                dump();
+                //dump();
         }
 
         if(offset >= WORKRAM_BEGIN && offset <= WORKRAM_END)memory[offset] = data;
@@ -92,7 +117,7 @@ inline void write_memory(WORD offset,BYTE data)
         else
         {
                 printf("Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                dump();
+                //dump();
                 exit(1);
         }
 }

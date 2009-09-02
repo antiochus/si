@@ -29,12 +29,20 @@ inline void flag_check_simple(BYTE value)
         {
                 *SIGN = 0;
         }
+        if(!value)
+        {
+                *ZERO = 1;
+        }
+        else
+        {
+                *ZERO = 0;
+        }
         parity(value);
 }
 
 inline void flag_check_add_no_carry(BYTE before, BYTE after)
 {
-        if((before & 0x08) > (after & 0x08))
+        if((before & 0x0F) > (after & 0x0F))
         {
                 *AUX_CARRY = 1;
         }
@@ -76,7 +84,7 @@ inline void flag_check_add(BYTE before, BYTE after)
 
 inline void flag_check_sub_no_carry(BYTE before, BYTE after)
 {
-        if((before & 0x08) < (after & 0x08))
+        if((before & 0x0F) < (after & 0x0F))
         {
                 *AUX_CARRY = 1;
         }
@@ -392,7 +400,7 @@ inline void opcode_ral(void)
         }
         else
         {
-                A = A >> 1;
+                A = A << 1;
                 *CARRY = 0;
         }
 }
