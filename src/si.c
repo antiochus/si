@@ -249,11 +249,6 @@ inline void invaders_sound(WORD channel, WORD op)
         }
 }
 
-inline void update_screen()
-{
-        blit(double_buffer, screen, 0, 0, 0, 0, 224, 256);
-}
-
 inline void snapshot()
 {
         PALETTE pal;
@@ -263,20 +258,66 @@ inline void snapshot()
 
 void update_buffer(WORD offset, BYTE data)
 {
-        int b,c,x,y;
+        int b,c,x,y,ty,tc;
 
-        x = (offset - 0x2400) >> 5;
-        y = (offset - 0x2400) & 0x1F;
-        c = 15;
-        if(y < 8) c = 2;
-        if(y > 23 && y < 28) c = 4;
+        offset = offset - VIDRAM_BEGIN;
+        x = offset >> 5;
+        y = offset & 0x1F;
+        if(y < 8)
+        {
+                /* 
+                    The bottom 7 rows are colored in green. This was done using a green
+                    color layer that was glued on top of the CRT
+                */
+                c = 2;
+        }
+        else
+        if(y > 23 && y < 28)
+        {
+                /*
+                    The same goes for the top rows from 24 to 27 where the red "mystery" ship flys
+                */
+                c = 4;
+        }
+        else
+        {
+                /*
+                    Everything else is not obscured by a color layer so appears in white
+                */
+                c = 15;
+        }
+        y = y << 3;
+        /*
+            1 byte of data packs 8 vertical color codes = 8 pixel colors in black & white
+            1 color per bit (0 = black, 1 = white)
+        */
         for (b = 0; b < 8; b++)
         {
-                //if(data & 0x01) putpixel(screen, x, 256 - ((y << 3) + b), c);
-                //else putpixel(screen, x, 256 - ((y << 3) + b), 0); data = data >> 1;
-                if(data & 0x01) putpixel(double_buffer, x, 256 - ((y << 3) + b), c);
-                else putpixel(double_buffer, x, 256 - ((y << 3) + b), 0); data = data >> 1;
+                /*
+                    Space Invaders coordinates go from bottom to top,
+                    but Allegro coordinates go from top to bottom so flipping the image is necessary
+                */
+                ty = 248 - (y + b);
+                /*
+                    Bit on? Use color, else use black
+                */ 
+                tc = (data & 0x01) ? c : 0;
+                putpixel(double_buffer, x, ty, tc);
+                /*
+                    Next bit
+                */
+                data = data >> 1;
         }
+}
+
+inline void update_screen()
+{
+        /*int i;
+        for(i = VIDRAM_BEGIN; i <= VIDRAM_END; i++)
+        {
+                update_buffer(i, memory[i]);
+        }*/
+        blit(double_buffer, screen, 0, 0, 0, 0, 224, 248);
 }
 
 BYTE invaders_shift(BYTE port, BYTE op)
@@ -428,9 +469,9 @@ int main(int argc, char* argv[])
                 }
         }
 
-        set_gfx_mode(GFX_AUTODETECT_WINDOWED, 224, 256, 0, 0);
-        double_buffer = create_bitmap(256,256);
-        clear_to_color(double_buffer,0);
+        set_gfx_mode(GFX_AUTODETECT_WINDOWED, 224, 248, 0, 0);
+        double_buffer = create_bitmap(224, 248);
+        clear_to_color(double_buffer, 0);
 
         if(_DEBUG)debug = fopen("DEBUG.TXT","wt");
         if(_DEBUG == 2)debug2 = fopen("DEBUG2.TXT","wt");

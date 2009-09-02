@@ -1672,7 +1672,7 @@ WORD cpu(WORD cycles)
                 {
                 //        dump();
                 }
-                dump(cycle_count);
+                //dump(cycle_count);
                 old_cmd5 = old_cmd4;
                 old_cmd4 = old_cmd3;
                 old_cmd3 = old_cmd2;

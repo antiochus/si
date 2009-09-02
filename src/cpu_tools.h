@@ -78,9 +78,13 @@ BYTE btemp, btemp2, btemp3;
 
 inline BYTE read_memory(WORD offset)
 {
+#ifdef DEBUGX
         if(SPECIALROM == 0)
         {
-                if(offset <= VIDRAM_END)return memory[offset];
+                if(offset <= VIDRAM_END)
+                {
+                        return memory[offset];
+                }
                 else
                 {
                         printf("Leseversuch an Offset %4X\n",offset);
@@ -90,7 +94,10 @@ inline BYTE read_memory(WORD offset)
         }
         else
         {
-                if(offset <= (VIDRAM_END + SPECIALROM_SIZE))return memory[offset];
+                if(offset <= (VIDRAM_END + SPECIALROM_SIZE))
+                {
+                        return memory[offset];
+                }
                 else
                 {
                         printf("Leseversuch an Offset %4X\n",offset);
@@ -98,21 +105,20 @@ inline BYTE read_memory(WORD offset)
                         exit(1);
                 }
         }
+#else
+        return memory[offset];
+#endif
 }
 
 inline void write_memory(WORD offset,BYTE data)
 {                              
-        if(offset == 0x1A11)
-        {
-                printf("Schreibversuch an Offset %4X\tPC = %4X\n",offset,(PC - 1));
-                //dump();
-        }
-
-        if(offset >= WORKRAM_BEGIN && offset <= WORKRAM_END)memory[offset] = data;
-        else if(offset >= VIDRAM_BEGIN && offset <= VIDRAM_END)
+        if(offset >= WORKRAM_BEGIN && offset <= VIDRAM_END)
         {
                 memory[offset] = data;
-                update_buffer(offset, data);
+                if(offset >= VIDRAM_BEGIN)
+                {
+                        update_buffer(offset, data);
+                }
         }
         else
         {
@@ -135,9 +141,17 @@ inline void set_flags(void)
 
 }
 
+static const BYTE ParityTable256[256] = 
+{
+#   define P2(n) n, n^1, n^1, n
+#   define P4(n) P2(n), P2(n^1), P2(n^1), P2(n)
+#   define P6(n) P4(n), P4(n^1), P4(n^1), P4(n)
+    P6(0), P6(1), P6(1), P6(0)
+};
+
 inline void parity(BYTE value)
 {
-        BYTE temp3 = 0;
+/*        BYTE temp3 = 0;
         if((value & 0x80))temp3++;
         if((value & 0x40))temp3++;
         if((value & 0x20))temp3++;
@@ -147,6 +161,8 @@ inline void parity(BYTE value)
         if((value & 0x02))temp3++;
         if((value & 0x01))temp3++;
         *PARITY = !(temp3 % 2);
+*/
+        *PARITY = !ParityTable256[value];
 }
 
 inline void wparity(WORD value)

@@ -271,8 +271,8 @@ inline int check_flag_condition(BYTE instruction)
 
 inline int decode_00(BYTE instruction, int cycle_count)
 {
-        BYTE *upper;
-        BYTE *lower;
+        BYTE *upper = NULL;
+        BYTE *lower= NULL;
         BYTE sp_upper;
         BYTE sp_lower;
         if(!instruction) /* NOP */
@@ -497,7 +497,7 @@ inline int decode_00(BYTE instruction, int cycle_count)
 
 inline int decode_10(BYTE instruction, int cycle_count)
 {
-        BYTE *lower;
+        BYTE *lower = NULL;
         decode_sss(instruction, &lower);
         if((instruction & 0x20) == 0x00) /* ADD / SUB */
         {
@@ -557,8 +557,8 @@ inline int decode_10(BYTE instruction, int cycle_count)
 
 inline int decode_11(BYTE instruction, int cycle_count)
 {
-        BYTE *upper;
-        BYTE *lower;
+        BYTE *upper = NULL;
+        BYTE *lower = NULL;
         if((instruction & 0x0B) == 0x01) /* PUSH / POP */
         {
                 decode_dd_special(instruction, &upper, &lower);
@@ -851,13 +851,13 @@ WORD cpu(WORD cycles)
                 {
                         //dump();
                 }
-                dump(cycle_count);
+                //dump(cycle_count);
                 old_cmd5 = old_cmd4;
                 old_cmd4 = old_cmd3;
                 old_cmd3 = old_cmd2;
                 old_cmd2 = old_cmd1;
-                old_cmd1 = memory[PC];
-                cycle_count = decode(memory[PC++], cycle_count);
+                old_cmd1 = memory[PC++];
+                cycle_count = decode(old_cmd1, cycle_count);
                 if(cycle_count == -1000)
                 {
                         //dump();
